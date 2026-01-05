@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 import json
 import threading
+import time
 import uuid
 import zipfile
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 import pandas as pd
 
-from moneybot.data_provider import BinanceKlinesProvider
+from moneybot.backtest.replay import ReplayEngine
+from moneybot.backtest.simulator import ExecutionSimulator, SimOrder, build_filters_from_exchange_info
+from moneybot.config import LOOKBACK_DAYS_DEFAULT
+from moneybot.datastore import DataStore
+from moneybot.market.recorder import BinanceHFRecorder
+from moneybot.rate_limiter import BinanceRestClient
+from moneybot.universe import build_universe
 
 
 @dataclass
@@ -61,7 +69,9 @@ class BacktestJobManager:
         trades_path = job.report_dir / "trades.csv"
         if not summary_path.exists():
             raise FileNotFoundError("Resumen no disponible")
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary = summary_payload.get("summary", summary_payload)
+        diagnostics = summary_payload.get("diagnostics", {})
         equity_series = []
         if equity_path.exists():
             equity_df = pd.read_csv(equity_path)
@@ -74,6 +84,7 @@ class BacktestJobManager:
             "summary": summary,
             "equity_series": equity_series,
             "trades": trades,
+            "diagnostics": diagnostics,
         }
 
     def build_zip(self, job_id: str) -> Path:
@@ -93,39 +104,40 @@ class BacktestJobManager:
     def _execute_job(self, job_id: str, payload: Dict[str, Any]) -> None:
         try:
             self._update_job(job_id, state="running", progress=5, message="Preparando")
-            symbols = payload.get("symbols", [])
-            if not symbols:
-                raise ValueError("Debe incluir al menos un símbolo")
-            interval = payload.get("interval", "1h")
+            symbols = payload.get("symbols") or []
             start_date = payload.get("start_date")
             end_date = payload.get("end_date")
-            if not start_date or not end_date:
-                raise ValueError("start_date y end_date son requeridos")
-            start_dt = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
-            end_dt = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc)
+
+            if not symbols:
+                symbols = build_universe()
+
+            start_dt, end_dt = _resolve_date_range(start_date, end_date)
             if start_dt > end_dt:
                 raise ValueError("start_date debe ser menor o igual que end_date")
+
             initial_balance = float(payload.get("initial_balance", 1000.0))
             fee_rate = float(payload.get("fee_rate", 0.001))
             slippage_bps = float(payload.get("slippage_bps", 0.0))
-            self._update_job(job_id, progress=15, message="Descargando datos")
-            provider = BinanceKlinesProvider()
-            data_by_symbol: Dict[str, pd.DataFrame] = {}
-            for symbol in symbols:
-                data_by_symbol[symbol] = provider.get_ohlcv(
-                    symbol,
-                    interval,
-                    start_dt,
-                    end_dt,
-                )
-            self._update_job(job_id, progress=45, message="Ejecutando backtest")
-            result = _run_simple_backtest(
-                data_by_symbol,
+
+            self._update_job(job_id, progress=15, message="Verificando datos")
+            datastore = DataStore()
+            _ensure_datastore_coverage(datastore, symbols, start_dt, end_dt)
+
+            self._update_job(job_id, progress=35, message="Cargando filtros")
+            filters_by_symbol = _load_exchange_filters()
+
+            self._update_job(job_id, progress=55, message="Ejecutando backtest")
+            result = _run_replay_backtest(
+                datastore,
+                symbols,
+                start_dt,
+                end_dt,
                 initial_balance=initial_balance,
                 fee_rate=fee_rate,
                 slippage_bps=slippage_bps,
+                filters_by_symbol=filters_by_symbol,
             )
-            self._update_job(job_id, progress=80, message="Guardando reporte")
+            self._update_job(job_id, progress=85, message="Guardando reporte")
             report_dir = Path("./reports") / job_id
             report_dir.mkdir(parents=True, exist_ok=True)
             _save_report(report_dir, result)
@@ -164,158 +176,170 @@ class BacktestJobManager:
                 job.finished_at = datetime.now(timezone.utc)
 
 
-def _run_simple_backtest(
-    data_by_symbol: Dict[str, pd.DataFrame],
+def _resolve_date_range(start_date: str | None, end_date: str | None) -> tuple[datetime, datetime]:
+    now = datetime.now(timezone.utc)
+    if end_date:
+        end_dt = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc)
+    else:
+        end_dt = now
+    if start_date:
+        start_dt = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
+    else:
+        start_dt = end_dt - timedelta(days=LOOKBACK_DAYS_DEFAULT)
+    return start_dt, end_dt
+
+
+def _ensure_datastore_coverage(
+    datastore: DataStore, symbols: Iterable[str], start_dt: datetime, end_dt: datetime
+) -> None:
+    missing = [symbol for symbol in symbols if not datastore.has_coverage(symbol, start_dt, end_dt)]
+    if not missing:
+        return
+    warmup_minutes = int(os.getenv("SIM_WARMUP_MINUTES", "10"))
+    recorder = BinanceHFRecorder(datastore=datastore)
+    recorder.start(missing)
+    warmup_end = datetime.now(timezone.utc) + timedelta(minutes=warmup_minutes)
+    while datetime.now(timezone.utc) < warmup_end:
+        time.sleep(1)
+    recorder.stop()
+
+
+def _load_exchange_filters() -> Dict[str, dict]:
+    client = BinanceRestClient()
+    exchange_info = client.get_json("/api/v3/exchangeInfo")
+    return build_filters_from_exchange_info(exchange_info)
+
+
+class SimpleReplayStrategy:
+    def __init__(
+        self,
+        *,
+        trade_notional: float,
+        entry_bps: float = 5.0,
+        exit_bps: float = 5.0,
+    ) -> None:
+        self.trade_notional = trade_notional
+        self.entry_bps = entry_bps
+        self.exit_bps = exit_bps
+        self.last_price: Dict[str, float] = {}
+        self.positions: Dict[str, float] = {}
+
+    def on_event(self, event: Any, state: Any) -> List[SimOrder]:
+        if event.stream != "aggTrade":
+            return []
+        price = state.last_trade_price
+        if price is None:
+            return []
+        last = self.last_price.get(event.symbol)
+        self.last_price[event.symbol] = price
+        if last is None:
+            return []
+
+        orders: List[SimOrder] = []
+        position = self.positions.get(event.symbol, 0.0)
+        if position <= 0 and price > last * (1 + self.entry_bps / 10000):
+            qty = self.trade_notional / price
+            orders.append(
+                SimOrder(
+                    symbol=event.symbol,
+                    side="BUY",
+                    order_type="market",
+                    quantity=qty,
+                )
+            )
+        elif position > 0 and price < last * (1 - self.exit_bps / 10000):
+            orders.append(
+                SimOrder(
+                    symbol=event.symbol,
+                    side="SELL",
+                    order_type="market",
+                    quantity=position,
+                )
+            )
+        return orders
+
+    def on_fill(self, fill: Any) -> None:
+        position = self.positions.get(fill.symbol, 0.0)
+        if fill.side.upper() == "BUY":
+            self.positions[fill.symbol] = position + fill.quantity
+        else:
+            self.positions[fill.symbol] = max(0.0, position - fill.quantity)
+
+
+def _run_replay_backtest(
+    datastore: DataStore,
+    symbols: Iterable[str],
+    start_dt: datetime,
+    end_dt: datetime,
     *,
     initial_balance: float,
     fee_rate: float,
     slippage_bps: float,
+    filters_by_symbol: Dict[str, dict],
 ) -> Dict[str, Any]:
-    slippage = slippage_bps / 10000
-    num_symbols = max(len(data_by_symbol), 1)
+    symbols_list = list(symbols)
+    num_symbols = max(len(symbols_list), 1)
     cash_per_symbol = initial_balance / num_symbols
-    all_trades: List[Dict[str, Any]] = []
-    equity_frames: List[pd.DataFrame] = []
-    per_symbol: List[Dict[str, Any]] = []
-    events_loaded_total = 0
-    entry_signals_total = 0
-
-    for symbol, df in data_by_symbol.items():
-        if df.empty:
-            per_symbol.append(
-                {
-                    "symbol": symbol,
-                    "events": 0,
-                    "entry_signals": 0,
-                    "trades": 0,
-                    "skip_reason": None,
-                }
-            )
-            continue
-        df = df.sort_values("timestamp").reset_index(drop=True)
-        cash = cash_per_symbol
-        position = None
-        equity_rows: List[Dict[str, Any]] = []
-        symbol_entry_signals = int((df["close"] > df["open"]).sum())
-        symbol_trades = 0
-        events_loaded_total += len(df)
-        entry_signals_total += symbol_entry_signals
-
-        for idx, row in df.iterrows():
-            timestamp = row["timestamp"]
-            close_price = float(row["close"])
-            open_price = float(row["open"])
-
-            if position is None:
-                if close_price <= open_price:
-                    equity_rows.append({"timestamp": timestamp, "equity": cash})
-                    continue
-                entry_price = close_price * (1 + slippage)
-                quantity = cash / (entry_price * (1 + fee_rate)) if entry_price > 0 else 0
-                entry_fee = entry_price * quantity * fee_rate
-                if quantity <= 0:
-                    equity_rows.append({"timestamp": timestamp, "equity": cash})
-                    continue
-                trade_cost = entry_price * quantity + entry_fee
-                cash -= trade_cost
-                position = {
-                    "entry_index": idx,
-                    "entry_price": entry_price,
-                    "entry_time": _format_time(timestamp),
-                    "quantity": quantity,
-                    "entry_fee": entry_fee,
-                    "trade_cost": trade_cost,
-                }
-                equity_rows.append({"timestamp": timestamp, "equity": cash + quantity * close_price})
-                continue
-
-            exit_price = close_price * (1 - slippage)
-            exit_fee = exit_price * position["quantity"] * fee_rate
-            proceeds = exit_price * position["quantity"] - exit_fee
-            cash += proceeds
-            pnl = proceeds - position["trade_cost"]
-            return_pct = pnl / position["trade_cost"] if position["trade_cost"] else 0
-
-            all_trades.append(
-                {
-                    "symbol": symbol,
-                    "entry_time": position["entry_time"],
-                    "exit_time": _format_time(timestamp),
-                    "entry_price": position["entry_price"],
-                    "exit_price": exit_price,
-                    "quantity": position["quantity"],
-                    "pnl": pnl,
-                    "return_pct": return_pct,
-                    "holding_candles": idx - position["entry_index"],
-                    "exit_reason": "next_candle",
-                    "fees_paid": position["entry_fee"] + exit_fee,
-                }
-            )
-            symbol_trades += 1
-            position = None
-            equity_rows.append({"timestamp": timestamp, "equity": cash})
-
-        if position is not None:
-            last_row = df.iloc[-1]
-            exit_price = float(last_row["close"]) * (1 - slippage)
-            exit_fee = exit_price * position["quantity"] * fee_rate
-            proceeds = exit_price * position["quantity"] - exit_fee
-            cash += proceeds
-            pnl = proceeds - position["trade_cost"]
-            return_pct = pnl / position["trade_cost"] if position["trade_cost"] else 0
-            all_trades.append(
-                {
-                    "symbol": symbol,
-                    "entry_time": position["entry_time"],
-                    "exit_time": _format_time(last_row["timestamp"]),
-                    "entry_price": position["entry_price"],
-                    "exit_price": exit_price,
-                    "quantity": position["quantity"],
-                    "pnl": pnl,
-                    "return_pct": return_pct,
-                    "holding_candles": len(df) - 1 - position["entry_index"],
-                    "exit_reason": "end_of_data",
-                    "fees_paid": position["entry_fee"] + exit_fee,
-                }
-            )
-            symbol_trades += 1
-            equity_rows.append({"timestamp": last_row["timestamp"], "equity": cash})
-
-        equity_frames.append(pd.DataFrame(equity_rows))
-        per_symbol.append(
-            {
-                "symbol": symbol,
-                "events": len(df),
-                "entry_signals": symbol_entry_signals,
-                "trades": symbol_trades,
-                "skip_reason": None,
-            }
-        )
-
-    if equity_frames:
-        equity_df = equity_frames[0]
-        for extra in equity_frames[1:]:
-            equity_df = equity_df.merge(extra, on="timestamp", how="outer", suffixes=("", "_extra"))
-            equity_cols = [col for col in equity_df.columns if col.startswith("equity")]
-            equity_df["equity"] = equity_df[equity_cols].sum(axis=1)
-            equity_df = equity_df[["timestamp", "equity"]]
-        equity_df = equity_df.sort_values("timestamp").reset_index(drop=True)
-    else:
-        equity_df = pd.DataFrame(columns=["timestamp", "equity"])
-
-    summary = _calculate_summary(all_trades, equity_df, initial_balance)
-    diagnostics = _build_diagnostics(
-        data_by_symbol=data_by_symbol,
-        per_symbol=per_symbol,
-        events_loaded_total=events_loaded_total,
-        entry_signals_total=entry_signals_total,
-        trades_executed=len(all_trades),
+    initial_cash_by_symbol = {symbol: cash_per_symbol for symbol in symbols_list}
+    engine = ReplayEngine(
+        datastore,
+        symbols_list,
+        start_dt=start_dt,
+        end_dt=end_dt,
     )
-    summary["diagnostics"] = diagnostics
+    simulator = ExecutionSimulator(
+        initial_cash_by_symbol=initial_cash_by_symbol,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
+        filters_by_symbol=filters_by_symbol,
+    )
+    strategy = SimpleReplayStrategy(trade_notional=cash_per_symbol * 0.1)
+
+    per_symbol = {
+        symbol: {"symbol": symbol, "events": 0, "trades": 0, "skip_reason": None}
+        for symbol in symbols_list
+    }
+    events_loaded_total = 0
+
+    for event in engine.iter_events():
+        state = engine.update_state(event)
+        events_loaded_total += 1
+        per_symbol[event.symbol]["events"] += 1
+
+        orders = strategy.on_event(event, state)
+        fills: List[Any] = []
+        for order in orders:
+            fills.extend(simulator.submit_order(order, state))
+
+        fills.extend(simulator.on_event(state))
+        for fill in fills:
+            per_symbol[fill.symbol]["trades"] += 1
+            strategy.on_fill(fill)
+
+        simulator.record_equity(event.timestamp_us, engine.state_by_symbol)
+
+    simulator.liquidate(engine.state_by_symbol)
+    simulator.record_equity(int(end_dt.timestamp() * 1_000_000), engine.state_by_symbol)
+    report = simulator.build_report()
+
+    equity_df = pd.DataFrame(report.equity_curve)
+    if not equity_df.empty:
+        equity_df["timestamp"] = equity_df["timestamp"].apply(_format_time_us)
+    summary = _calculate_summary(
+        report.trades,
+        equity_df,
+        initial_balance=initial_balance,
+    )
+    diagnostics = _build_diagnostics(
+        per_symbol=list(per_symbol.values()),
+        events_loaded_total=events_loaded_total,
+        trades_executed=len(report.trades),
+    )
     return {
         "summary": summary,
         "equity": equity_df,
-        "trades": all_trades,
+        "trades": report.trades,
+        "diagnostics": diagnostics,
     }
 
 
@@ -324,15 +348,12 @@ def _calculate_summary(
     equity_df: pd.DataFrame,
     initial_balance: float,
 ) -> Dict[str, Any]:
-    total_pnl = sum(trade["pnl"] for trade in trades)
+    final_balance = initial_balance
+    if not equity_df.empty and "equity" in equity_df.columns:
+        final_balance = float(equity_df["equity"].iloc[-1])
+    total_pnl = final_balance - initial_balance
     total_return = total_pnl / initial_balance if initial_balance else 0
     num_trades = len(trades)
-    wins = [trade for trade in trades if trade["pnl"] > 0]
-    losses = [trade for trade in trades if trade["pnl"] < 0]
-    winrate = len(wins) / num_trades if num_trades else 0
-    profit_sum = sum(trade["pnl"] for trade in wins)
-    loss_sum = abs(sum(trade["pnl"] for trade in losses))
-    profit_factor = profit_sum / loss_sum if loss_sum else (profit_sum if profit_sum else 0)
     max_drawdown = 0.0
     if not equity_df.empty:
         equity = equity_df["equity"].fillna(method="ffill").fillna(initial_balance)
@@ -347,21 +368,19 @@ def _calculate_summary(
 
     return {
         "initial_balance": initial_balance,
-        "final_balance": initial_balance + total_pnl,
+        "final_balance": final_balance,
         "total_return": total_return,
         "num_trades": num_trades,
-        "winrate": winrate,
-        "profit_factor": profit_factor,
+        "winrate": 0.0,
+        "profit_factor": 0.0,
         "max_drawdown": max_drawdown,
     }
 
 
 def _build_diagnostics(
     *,
-    data_by_symbol: Dict[str, pd.DataFrame],
     per_symbol: List[Dict[str, Any]],
     events_loaded_total: int,
-    entry_signals_total: int,
     trades_executed: int,
 ) -> Dict[str, Any]:
     if trades_executed == 0:
@@ -369,11 +388,10 @@ def _build_diagnostics(
             item["skip_reason"] = _infer_skip_reason(item)
 
     return {
-        "universe_size": len(data_by_symbol),
+        "universe_size": len(per_symbol),
         "symbols_tested": sum(1 for item in per_symbol if item["events"] > 0),
-        "data_source": "rest_1s_klines",
+        "data_source": "datastore_replay",
         "events_loaded_total": events_loaded_total,
-        "entry_signals_total": entry_signals_total,
         "trades_executed": trades_executed,
         "per_symbol": per_symbol,
     }
@@ -382,8 +400,6 @@ def _build_diagnostics(
 def _infer_skip_reason(symbol_diag: Dict[str, Any]) -> str:
     if symbol_diag["events"] == 0:
         return "no_data"
-    if symbol_diag["entry_signals"] == 0:
-        return "no_signals"
     if symbol_diag["trades"] == 0:
         return "filters_blocked"
     return "unknown"
@@ -395,7 +411,14 @@ def _save_report(report_dir: Path, result: Dict[str, Any]) -> None:
     trades_path = report_dir / "trades.csv"
 
     summary_path.write_text(
-        json.dumps(result["summary"], ensure_ascii=False, indent=2),
+        json.dumps(
+            {
+                "summary": result["summary"],
+                "diagnostics": result["diagnostics"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
     result["equity"].to_csv(equity_path, index=False)
@@ -403,9 +426,9 @@ def _save_report(report_dir: Path, result: Dict[str, Any]) -> None:
     trades_df.to_csv(trades_path, index=False)
 
 
-def _format_time(value: Any) -> str:
+def _format_time_us(value: Any) -> str:
     if isinstance(value, (int, float)):
-        return datetime.utcfromtimestamp(value / 1000).isoformat()
+        return datetime.utcfromtimestamp(value / 1_000_000).isoformat()
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
     return str(value)

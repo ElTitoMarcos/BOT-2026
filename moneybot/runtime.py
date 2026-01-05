@@ -5,39 +5,71 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
-from moneybot.backtest import Backtester
-from moneybot.backtest.replay import replay_from_datastore
-from moneybot.config import HF_INTERVAL, LOOKBACK_DAYS_DEFAULT
-from moneybot.data_provider import BinanceKlinesProvider
+from moneybot.backtest.replay import ReplayEngine
+from moneybot.backtest.simulator import ExecutionSimulator, SimOrder
+from moneybot.config import LOOKBACK_DAYS_DEFAULT
 from moneybot.datastore import DataStore
 from moneybot.market.recorder import BinanceHFRecorder
 from moneybot.market_streams import BinanceStreamCache
-from moneybot.risk import RiskManager
-from moneybot.strategy import Strategy
 
 
 @dataclass
 class SimConfig:
     symbols: list[str]
-    interval: str
     lookback_days: int
     initial_balance: float
     fee_rate: float
     slippage_bps: float
 
 
-class SimTrendStrategy:
-    def __init__(self) -> None:
-        self.trend_engine = Strategy()
-        self.take_profit_pct = 0.03
-        self.stop_loss_pct = 0.01
-        self.max_holding_candles = 24
+class SimReplayStrategy:
+    def __init__(self, *, trade_notional: float, entry_bps: float = 5.0, exit_bps: float = 5.0) -> None:
+        self.trade_notional = trade_notional
+        self.entry_bps = entry_bps
+        self.exit_bps = exit_bps
+        self.last_price: dict[str, float] = {}
+        self.positions: dict[str, float] = {}
 
-    def entry_signal(self, df):
-        tendencias = self.trend_engine.calcular_tendencias(df)
-        return (tendencias == "ALCISTA").fillna(False)
+    def on_event(self, event: Any, state: Any) -> list[SimOrder]:
+        if event.stream != "aggTrade":
+            return []
+        price = state.last_trade_price
+        if price is None:
+            return []
+        last = self.last_price.get(event.symbol)
+        self.last_price[event.symbol] = price
+        if last is None:
+            return []
+        position = self.positions.get(event.symbol, 0.0)
+        if position <= 0 and price > last * (1 + self.entry_bps / 10000):
+            qty = self.trade_notional / price
+            return [
+                SimOrder(
+                    symbol=event.symbol,
+                    side="BUY",
+                    order_type="market",
+                    quantity=qty,
+                )
+            ]
+        if position > 0 and price < last * (1 - self.exit_bps / 10000):
+            return [
+                SimOrder(
+                    symbol=event.symbol,
+                    side="SELL",
+                    order_type="market",
+                    quantity=position,
+                )
+            ]
+        return []
+
+    def on_fill(self, fill: Any) -> None:
+        position = self.positions.get(fill.symbol, 0.0)
+        if fill.side.upper() == "BUY":
+            self.positions[fill.symbol] = position + fill.quantity
+        else:
+            self.positions[fill.symbol] = max(0.0, position - fill.quantity)
 
 
 class BotRuntime:
@@ -85,7 +117,6 @@ class BotRuntime:
             config = self._load_sim_config()
             end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(days=config.lookback_days)
-            data_by_symbol = {}
             datastore = DataStore()
             if not self._has_hf_coverage(datastore, config.symbols, start_time, end_time):
                 warmup_minutes = int(os.getenv("SIM_WARMUP_MINUTES", "10"))
@@ -99,48 +130,33 @@ class BotRuntime:
                     time.sleep(1)
                 recorder.stop()
 
-            data_by_symbol = replay_from_datastore(
+            engine = ReplayEngine(
                 datastore,
                 config.symbols,
                 start_dt=start_time,
                 end_dt=end_time,
-                interval=config.interval,
             )
-            has_replay_data = (
-                any(not df.empty for df in data_by_symbol.values())
-                if data_by_symbol
-                else False
-            )
-            if not has_replay_data:
-                provider = BinanceKlinesProvider()
-                for symbol in config.symbols:
-                    if self.stop_event.is_set():
-                        return
-                    data_by_symbol[symbol] = provider.get_ohlcv(
-                        symbol, config.interval, start_time, end_time
-                    )
-                    self.last_update_ts = time.time()
-            self.last_update_ts = time.time()
-
-            strategy = SimTrendStrategy()
-            risk_manager = RiskManager(
-                max_open_positions=1,
-                risk_per_trade_pct=0.02,
-                daily_drawdown_limit_pct=0.05,
-                cooldown_candles_after_loss=3,
-                stop_loss_pct=strategy.stop_loss_pct,
-                take_profit_pct=strategy.take_profit_pct,
-                trailing_stop_pct=None,
-                max_holding_candles=strategy.max_holding_candles,
-            )
-            backtester = Backtester(
-                initial_balance=config.initial_balance,
+            cash_per_symbol = config.initial_balance / max(len(config.symbols), 1)
+            simulator = ExecutionSimulator(
+                initial_cash_by_symbol={symbol: cash_per_symbol for symbol in config.symbols},
                 fee_rate=config.fee_rate,
                 slippage_bps=config.slippage_bps,
-                buffer_bps=10,
-                risk_manager=risk_manager,
             )
-            backtester.run(strategy, data_by_symbol)
+            strategy = SimReplayStrategy(trade_notional=cash_per_symbol * 0.1)
+
+            for event in engine.iter_events():
+                if self.stop_event.is_set():
+                    return
+                state = engine.update_state(event)
+                fills = []
+                for order in strategy.on_event(event, state):
+                    fills.extend(simulator.submit_order(order, state))
+                fills.extend(simulator.on_event(state))
+                for fill in fills:
+                    strategy.on_fill(fill)
+                simulator.record_equity(event.timestamp_us, engine.state_by_symbol)
+                self.last_update_ts = time.time()
+            simulator.liquidate(engine.state_by_symbol)
             self.last_update_ts = time.time()
         finally:
             self.is_running = False
@@ -169,14 +185,12 @@ class BotRuntime:
 
     def _load_sim_config(self) -> SimConfig:
         symbols = self._parse_symbols(os.getenv("SIM_SYMBOLS"), ["BTCUSDT"])
-        interval = os.getenv("SIM_INTERVAL", HF_INTERVAL)
         lookback_days = int(os.getenv("SIM_LOOKBACK_DAYS", str(LOOKBACK_DAYS_DEFAULT)))
         initial_balance = float(os.getenv("SIM_INITIAL_BALANCE", "1000"))
         fee_rate = float(os.getenv("SIM_FEE_RATE", "0.001"))
         slippage_bps = float(os.getenv("SIM_SLIPPAGE_BPS", "5"))
         return SimConfig(
             symbols=symbols,
-            interval=interval,
             lookback_days=lookback_days,
             initial_balance=initial_balance,
             fee_rate=fee_rate,
