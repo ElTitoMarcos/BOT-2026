@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from moneybot.backtest.runner import BacktestJobManager
 from moneybot.config import VALID_ENVIRONMENTS, get_config, load_env, save_config
 from moneybot.data_provider import BinanceKlinesProvider
 from moneybot.observability import ObservabilityStore
@@ -18,6 +19,7 @@ from moneybot.runtime import BotRuntime
 app = FastAPI(title="MoneyBot")
 runtime = BotRuntime()
 observability = ObservabilityStore()
+backtest_jobs = BacktestJobManager()
 LOG_PATH = Path("logs/moneybot.log")
 UI_DIR = Path(__file__).resolve().parent / "ui_static"
 
@@ -40,6 +42,16 @@ class DataDownloadPayload(BaseModel):
     interval: str
     start_date: str
     end_date: str
+
+
+class BacktestRunPayload(BaseModel):
+    symbols: list[str]
+    interval: str
+    start_date: str
+    end_date: str
+    initial_balance: float = 1000.0
+    fee_rate: float = 0.001
+    slippage_bps: float = 0.0
 
 
 @app.get("/", include_in_schema=False)
@@ -181,6 +193,47 @@ def data_list() -> dict:
         if path.is_file() and path.suffix in {".csv", ".parquet"}
     )
     return {"files": files}
+
+
+@app.post("/backtest/run")
+def backtest_run(payload: BacktestRunPayload) -> dict:
+    job_id = backtest_jobs.run_job(payload.dict())
+    return {"job_id": job_id}
+
+
+@app.get("/backtest/status/{job_id}")
+def backtest_status(job_id: str) -> dict:
+    job = backtest_jobs.get_status(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job no encontrado")
+    return {"state": job.state, "progress": job.progress, "message": job.message}
+
+
+@app.get("/backtest/result/{job_id}")
+def backtest_result(job_id: str) -> dict:
+    job = backtest_jobs.get_status(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job no encontrado")
+    if job.state != "completed":
+        raise HTTPException(status_code=400, detail="El job no está completado")
+    try:
+        return backtest_jobs.read_results(job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/backtest/download/{job_id}")
+def backtest_download(job_id: str) -> FileResponse:
+    job = backtest_jobs.get_status(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job no encontrado")
+    if job.state != "completed":
+        raise HTTPException(status_code=400, detail="El job no está completado")
+    try:
+        zip_path = backtest_jobs.build_zip(job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(zip_path, filename=f"backtest_{job_id}.zip")
 
 
 app.mount("/ui_static", StaticFiles(directory=UI_DIR), name="ui_static")
