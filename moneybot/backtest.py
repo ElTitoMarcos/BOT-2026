@@ -47,10 +47,17 @@ class Backtester:
       al precio objetivo con slippage aplicado.
     """
 
-    def __init__(self, initial_balance: float, fee_rate: float, slippage_bps: float) -> None:
+    def __init__(
+        self,
+        initial_balance: float,
+        fee_rate: float,
+        slippage_bps: float,
+        buffer_bps: float = 10.0,
+    ) -> None:
         self.initial_balance = float(initial_balance)
         self.fee_rate = float(fee_rate)
         self.slippage_bps = float(slippage_bps)
+        self.buffer_bps = float(buffer_bps)
 
     def run(self, strategy: Any, data_by_symbol: Dict[str, pd.DataFrame]) -> BacktestResult:
         num_symbols = max(len(data_by_symbol), 1)
@@ -162,7 +169,11 @@ class Backtester:
                     exit_reason = "stop_loss"
                     exit_base_price = stop_price
             if exit_reason is None and take_profit_pct is not None:
+                min_take_profit = position["entry_price"] * (
+                    1 + 2 * self.fee_rate + self.buffer_bps / 10000
+                )
                 take_profit = position["entry_price"] * (1 + take_profit_pct)
+                take_profit = max(take_profit, min_take_profit)
                 if float(row["high"]) >= take_profit:
                     exit_reason = "take_profit"
                     exit_base_price = take_profit
