@@ -1,5 +1,6 @@
 import tkinter as tk
 import csv
+import logging
 import os
 import math
 import threading
@@ -24,11 +25,13 @@ from .config import get_binance_credentials, load_environment, save_binance_cred
 from .risk import RiskManager
 from .rate_limiter import BinanceRateLimiter, BinanceRestClient
 from .market_streams import BinanceStreamCache
+from .observability import ObservabilityStore, start_observability_server
 
 class MoneyBotApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Money Bot")
+        self.logger = logging.getLogger(__name__)
         pygame.mixer.init()
         self.rate_limiter = BinanceRateLimiter()
         self.rest_client = BinanceRestClient(rate_limiter=self.rate_limiter)
@@ -83,11 +86,15 @@ class MoneyBotApp(tk.Tk):
 
         self.api_key = None
         self.api_secret = None
+        self.latest_balance_btc = None
+        self.observability = ObservabilityStore()
+        self.observability_thread = None
 
         load_environment()
         self.load_api_credentials()
 
         self.create_widgets()
+        self.observability_thread = start_observability_server(self, self.observability)
 
     def create_widgets(self):
         self.create_api_configuration()
@@ -1669,7 +1676,9 @@ class MoneyBotApp(tk.Tk):
             account_info = self.client.get_account()
             for balance in account_info['balances']:
                 if balance['asset'] == 'BTC':
-                    return float(balance['free'])
+                    balance_btc = float(balance['free'])
+                    self.latest_balance_btc = balance_btc
+                    return balance_btc
             
             print("No se pudo encontrar el saldo de BTC en la cuenta.")
             pygame.mixer.music.load('error.mp3')
@@ -1686,6 +1695,7 @@ class MoneyBotApp(tk.Tk):
         balance_btc = self.get_btc_balance()
         if balance_btc is None:
             return
+        self.latest_balance_btc = balance_btc
         self.risk_manager.update_equity(balance_btc, datetime.now(timezone.utc))
 
     def obtener_minima_cantidad_usdt(self):
@@ -1789,10 +1799,28 @@ class MoneyBotApp(tk.Tk):
                 if os.stat(self.nombre_archivo_csv_compra).st_size == 0:
                     writer.writeheader()
                 writer.writerow(datos)
+            trade = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "symbol": datos.get("Par"),
+                "side": "BUY",
+                "order_id": datos.get("Order ID"),
+                "price": datos.get("Precio Compra"),
+            }
+            self.observability.record_trade(trade)
+            self.logger.info(
+                "Trade buy recorded",
+                extra={
+                    "event": "trade.buy",
+                    "symbol": datos.get("Par"),
+                    "order_id": datos.get("Order ID"),
+                    "price": datos.get("Precio Compra"),
+                },
+            )
         except Exception as e:
             pygame.mixer.music.load('error.mp3')
             pygame.mixer.music.play()
             print(f"Error al guardar los datos de compra: {e}")
+            self.logger.exception("Error al guardar los datos de compra", extra={"event": "trade.buy.error"})
 
     def guardar_datos_venta(self, datos):
         try:
@@ -1801,10 +1829,33 @@ class MoneyBotApp(tk.Tk):
                 if os.stat(self.nombre_archivo_csv_venta).st_size == 0:
                     writer.writeheader()
                 writer.writerow(datos)
+            trade = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "symbol": datos.get("Par"),
+                "side": "SELL",
+                "order_id": datos.get("Order ID"),
+                "price": datos.get("Precio Compra"),
+                "loss": datos.get("Orden con perdidas"),
+            }
+            self.observability.record_trade(trade)
+            if datos.get("Orden con perdidas") is not None:
+                pnl_delta = -1 if datos.get("Orden con perdidas") else 1
+                self.observability.record_result(pnl_delta)
+            self.logger.info(
+                "Trade sell recorded",
+                extra={
+                    "event": "trade.sell",
+                    "symbol": datos.get("Par"),
+                    "order_id": datos.get("Order ID"),
+                    "price": datos.get("Precio Compra"),
+                    "loss": datos.get("Orden con perdidas"),
+                },
+            )
         except Exception as e:
             pygame.mixer.music.load('error.mp3')
             pygame.mixer.music.play()
             print(f"Error al guardar los datos de venta: {e}")
+            self.logger.exception("Error al guardar los datos de venta", extra={"event": "trade.sell.error"})
 
     def play_error_sound(self):
         pygame.mixer.music.load('error.mp3')
@@ -1815,7 +1866,38 @@ class MoneyBotApp(tk.Tk):
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with open("errores.txt", "a") as file:
                 file.write(f"{now}: {error_msg}")
+            self.logger.error(
+                "Error registrado",
+                extra={"event": "bot.error", "detail": error_msg.strip()},
+            )
         except Exception as e:
             pygame.mixer.music.load('error.mp3')
             pygame.mixer.music.play()
             print(f"Error al guardar el mensaje de error: {e}")
+            self.logger.exception("Error al guardar el mensaje de error", extra={"event": "bot.error.save_failed"})
+
+    def get_status_snapshot(self):
+        with self.lock:
+            posiciones = [
+                {
+                    "symbol": order.get("symbol"),
+                    "side": order.get("side"),
+                    "status": order.get("status"),
+                    "order_id": order.get("orderId"),
+                    "price": order.get("price"),
+                    "orig_qty": order.get("origQty"),
+                }
+                for order in self.estado_ordenes
+            ]
+        if self.error_1003:
+            modo = "halted"
+        elif not self.ordenes:
+            modo = "paused"
+        else:
+            modo = "running"
+        return {
+            "mode": modo,
+            "balance_btc": self.latest_balance_btc,
+            "positions": posiciones,
+            "open_positions": len(posiciones),
+        }
