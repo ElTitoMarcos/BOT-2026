@@ -1,26 +1,25 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
 from .backtest import Backtester
 from .data_provider import BinanceKlinesProvider
+from .strategy import Strategy
 
 
 @dataclass
-class MovingAverageStrategy:
-    short_window: int = 5
-    long_window: int = 20
+class TrendStrategy:
+    trend_engine: Strategy = field(default_factory=Strategy)
     take_profit_pct: float = 0.03
     stop_loss_pct: float = 0.01
     max_holding_candles: int = 24
 
     def entry_signal(self, df: pd.DataFrame) -> pd.Series:
-        short_ma = df["close"].rolling(self.short_window).mean()
-        long_ma = df["close"].rolling(self.long_window).mean()
-        return (short_ma > long_ma).fillna(False)
+        tendencias = self.trend_engine.calcular_tendencias(df)
+        return (tendencias == "ALCISTA").fillna(False)
 
 
 def main() -> None:
@@ -33,7 +32,7 @@ def main() -> None:
     df = provider.get_ohlcv(symbol, interval, start_time, end_time)
     data_by_symbol = {symbol: df}
 
-    strategy = MovingAverageStrategy()
+    strategy = TrendStrategy()
     backtester = Backtester(initial_balance=1000.0, fee_rate=0.001, slippage_bps=5)
     result = backtester.run(strategy, data_by_symbol)
 
