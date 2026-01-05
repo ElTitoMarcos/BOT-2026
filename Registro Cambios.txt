@@ -1,3 +1,3 @@
-Bot_v1: Esta versión del bot es la V166 del bot END_V2. Se subirá a GitHub para empezar las modificaciones.
+Bot_v1: Esta versión del bot es la V143 de la carpeta END_V2 ya que es la ultima versión 100% autonoma. Se subirá a GitHub para empezar las modificaciones.
 
 Bot_v2:
