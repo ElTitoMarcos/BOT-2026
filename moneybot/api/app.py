@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -13,6 +15,7 @@ from moneybot.runtime import BotRuntime
 app = FastAPI(title="MoneyBot")
 runtime = BotRuntime()
 observability = ObservabilityStore()
+LOG_PATH = Path("logs/moneybot.log")
 
 load_env()
 
@@ -75,6 +78,18 @@ def metrics_status() -> dict:
 @app.get("/trades")
 def trades_status(limit: int = Query(50, ge=1, le=200)) -> dict:
     return {"trades": observability.get_trades(limit)}
+
+
+@app.get("/logs/tail")
+def logs_tail(limit: int = Query(200, ge=1, le=1000)) -> dict:
+    if not LOG_PATH.exists():
+        return {"lines": [], "available": False}
+    try:
+        with LOG_PATH.open("r", encoding="utf-8") as handle:
+            lines = deque(handle, maxlen=limit)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"No se pudo leer el log: {exc}") from exc
+    return {"lines": [line.rstrip("\n") for line in lines], "available": True}
 
 
 @app.post("/config/save")
@@ -225,6 +240,17 @@ def ui_placeholder() -> str:
             font-size: 0.8rem;
             color: #64748b;
           }}
+          .log-output {{
+            background: #0b1120;
+            border: 1px solid #1e293b;
+            border-radius: 10px;
+            padding: 12px;
+            max-height: 320px;
+            overflow-y: auto;
+            font-family: "Cascadia Mono", "Fira Code", monospace;
+            font-size: 0.82rem;
+            white-space: pre-wrap;
+          }}
         </style>
       </head>
       <body>
@@ -237,6 +263,7 @@ def ui_placeholder() -> str:
             <button class="tab-button active" data-tab="status">Status</button>
             <button class="tab-button" data-tab="metrics">Metrics</button>
             <button class="tab-button" data-tab="trades">Trades</button>
+            <button class="tab-button" data-tab="logs">Logs</button>
           </div>
 
           <section id="status" class="panel active">
@@ -265,6 +292,15 @@ def ui_placeholder() -> str:
               <div class="error" id="trades-error"></div>
             </div>
           </section>
+
+          <section id="logs" class="panel">
+            <div class="card">
+              <h2>Logs</h2>
+              <div id="logs-data" class="log-output"></div>
+              <div class="timestamp" id="logs-updated"></div>
+              <div class="error" id="logs-error"></div>
+            </div>
+          </section>
         </main>
         <script>
           const tabButtons = document.querySelectorAll(".tab-button");
@@ -282,12 +318,15 @@ def ui_placeholder() -> str:
           const statusContainer = document.getElementById("status-data");
           const metricsContainer = document.getElementById("metrics-data");
           const tradesContainer = document.getElementById("trades-data");
+          const logsContainer = document.getElementById("logs-data");
           const statusError = document.getElementById("status-error");
           const metricsError = document.getElementById("metrics-error");
           const tradesError = document.getElementById("trades-error");
+          const logsError = document.getElementById("logs-error");
           const statusUpdated = document.getElementById("status-updated");
           const metricsUpdated = document.getElementById("metrics-updated");
           const tradesUpdated = document.getElementById("trades-updated");
+          const logsUpdated = document.getElementById("logs-updated");
 
           const formatValue = (value) => {{
             if (value === null || value === undefined) return "N/A";
@@ -385,10 +424,26 @@ def ui_placeholder() -> str:
             }}
           }};
 
+          const refreshLogs = async () => {{
+            logsError.textContent = "";
+            try {{
+              const data = await fetchJson("/logs/tail?limit=200");
+              if (!data.available) {{
+                logsContainer.textContent = "Logs aún no disponibles.";
+              }} else {{
+                logsContainer.textContent = (data.lines || []).join("\\n");
+              }}
+              logsUpdated.textContent = `Actualizado: ${{new Date().toLocaleTimeString()}}`;
+            }} catch (error) {{
+              logsError.textContent = error.message;
+            }}
+          }};
+
           const refreshAll = () => {{
             refreshStatus();
             refreshMetrics();
             refreshTrades();
+            refreshLogs();
           }};
 
           refreshAll();
