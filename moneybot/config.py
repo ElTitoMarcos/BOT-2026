@@ -8,6 +8,11 @@ from dotenv import load_dotenv, set_key
 
 ENV_PATH = Path(".env")
 VALID_ENVIRONMENTS = {"LIVE", "TESTNET"}
+DATA_MAX_GB = float(os.getenv("DATA_MAX_GB", "100"))
+HF_INTERVAL = os.getenv("HF_INTERVAL", "1s")
+DEPTH_SPEED = os.getenv("DEPTH_SPEED", "100ms")
+UNIVERSE_TOP_N = int(os.getenv("UNIVERSE_TOP_N", "30"))
+LOOKBACK_DAYS_DEFAULT = int(os.getenv("LOOKBACK_DAYS_DEFAULT", "30"))
 
 
 def load_env(env_path: Path | str = ENV_PATH) -> None:
@@ -56,7 +61,12 @@ def save_config(
 
 
 __all__ = [
+    "DATA_MAX_GB",
+    "DEPTH_SPEED",
     "ENV_PATH",
+    "HF_INTERVAL",
+    "LOOKBACK_DAYS_DEFAULT",
+    "UNIVERSE_TOP_N",
     "VALID_ENVIRONMENTS",
     "get_config",
     "load_env",

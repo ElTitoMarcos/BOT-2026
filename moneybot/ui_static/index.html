@@ -247,7 +247,6 @@
         <button class="tab-button" data-tab="metrics">Metrics</button>
         <button class="tab-button" data-tab="trades">Trades</button>
         <button class="tab-button" data-tab="logs">Logs</button>
-        <button class="tab-button" data-tab="data">Data</button>
         <button class="tab-button" data-tab="backtest">Backtest</button>
       </div>
 
@@ -297,37 +296,6 @@
           <div id="logs-data" class="log-output"></div>
           <div class="timestamp" id="logs-updated"></div>
           <div class="error" id="logs-error"></div>
-        </div>
-      </section>
-
-      <section id="data" class="panel">
-        <div class="card">
-          <h2>Data</h2>
-          <div class="controls">
-            <div class="control-group">
-              <label for="data-symbols">Symbols</label>
-              <textarea
-                id="data-symbols"
-                placeholder="BTCUSDT, ETHUSDT"
-              ></textarea>
-            </div>
-            <div class="control-group">
-              <label for="data-interval">Interval</label>
-              <input id="data-interval" type="text" placeholder="1h" />
-            </div>
-            <div class="control-group">
-              <label for="data-start-date">Start date</label>
-              <input id="data-start-date" type="date" />
-            </div>
-            <div class="control-group">
-              <label for="data-end-date">End date</label>
-              <input id="data-end-date" type="date" />
-            </div>
-            <button class="btn primary" id="data-download-btn">Download</button>
-          </div>
-          <div id="data-list"></div>
-          <div class="timestamp" id="data-updated"></div>
-          <div class="error" id="data-error"></div>
         </div>
       </section>
 
