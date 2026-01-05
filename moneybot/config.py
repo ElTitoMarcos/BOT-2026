@@ -2,31 +2,63 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Tuple
+from typing import Dict, Optional
 
 from dotenv import load_dotenv, set_key
 
 ENV_PATH = Path(".env")
+VALID_ENVIRONMENTS = {"LIVE", "TESTNET"}
 
 
-def load_environment(env_path: Path | str = ENV_PATH) -> None:
+def load_env(env_path: Path | str = ENV_PATH) -> None:
     env_file = Path(env_path)
     if env_file.exists():
         load_dotenv(dotenv_path=env_file)
 
 
-def get_binance_credentials() -> Tuple[str | None, str | None]:
-    return os.environ.get("BINANCE_API_KEY"), os.environ.get("BINANCE_API_SECRET")
+def get_config() -> Dict[str, Optional[str]]:
+    return {
+        "BINANCE_API_KEY": os.environ.get("BINANCE_API_KEY"),
+        "BINANCE_API_SECRET": os.environ.get("BINANCE_API_SECRET"),
+        "ENV": os.environ.get("ENV", "LIVE").upper(),
+    }
 
 
-def save_binance_credentials(
-    api_key: str,
-    api_secret: str,
+def save_config(
+    api_key: Optional[str],
+    api_secret: Optional[str],
+    env: Optional[str],
     env_path: Path | str = ENV_PATH,
+    persist: bool = True,
 ) -> None:
-    env_file = Path(env_path)
-    env_file.touch(exist_ok=True)
-    set_key(str(env_file), "BINANCE_API_KEY", api_key)
-    set_key(str(env_file), "BINANCE_API_SECRET", api_secret)
-    os.environ["BINANCE_API_KEY"] = api_key
-    os.environ["BINANCE_API_SECRET"] = api_secret
+    if env is not None:
+        normalized_env = env.upper()
+        if normalized_env not in VALID_ENVIRONMENTS:
+            raise ValueError(f"ENV inválido: {normalized_env}. Usa LIVE o TESTNET.")
+        env = normalized_env
+
+    if persist:
+        env_file = Path(env_path)
+        env_file.touch(exist_ok=True)
+        if api_key is not None:
+            set_key(str(env_file), "BINANCE_API_KEY", api_key)
+        if api_secret is not None:
+            set_key(str(env_file), "BINANCE_API_SECRET", api_secret)
+        if env is not None:
+            set_key(str(env_file), "ENV", env)
+
+    if api_key is not None:
+        os.environ["BINANCE_API_KEY"] = api_key
+    if api_secret is not None:
+        os.environ["BINANCE_API_SECRET"] = api_secret
+    if env is not None:
+        os.environ["ENV"] = env
+
+
+__all__ = [
+    "ENV_PATH",
+    "VALID_ENVIRONMENTS",
+    "get_config",
+    "load_env",
+    "save_config",
+]
