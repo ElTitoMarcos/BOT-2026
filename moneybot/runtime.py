@@ -1,18 +1,47 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from moneybot.backtest import Backtester
+from moneybot.data_provider import BinanceKlinesProvider
+from moneybot.market_streams import BinanceStreamCache
+from moneybot.risk import RiskManager
+from moneybot.strategy import Strategy
+
+
+@dataclass
+class SimConfig:
+    symbols: list[str]
+    interval: str
+    lookback_days: int
+    initial_balance: float
+    fee_rate: float
+    slippage_bps: float
+
+
+class SimTrendStrategy:
+    def __init__(self) -> None:
+        self.trend_engine = Strategy()
+        self.take_profit_pct = 0.03
+        self.stop_loss_pct = 0.01
+        self.max_holding_candles = 24
+
+    def entry_signal(self, df):
+        tendencias = self.trend_engine.calcular_tendencias(df)
+        return (tendencias == "ALCISTA").fillna(False)
 
 
 class BotRuntime:
-    def __init__(self, mode: str = "PAPER") -> None:
+    def __init__(self, mode: str = "SIM") -> None:
         self.is_running = False
-        self.is_paused = False
         self.mode = mode
         self.last_update_ts: Optional[float] = None
         self.stop_event = threading.Event()
-        self._pause_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
@@ -21,18 +50,15 @@ class BotRuntime:
             if self._thread and self._thread.is_alive():
                 return
             self.stop_event.clear()
-            self._pause_event.clear()
-            self.is_paused = False
             self.is_running = True
             self.last_update_ts = time.time()
-            self._thread = threading.Thread(target=self._run_loop, daemon=True)
+            target = self._run_sim_pipeline if self.mode == "SIM" else self._run_live_engine
+            self._thread = threading.Thread(target=target, daemon=True)
             self._thread.start()
 
     def stop(self) -> None:
         with self._lock:
             self.stop_event.set()
-            self._pause_event.clear()
-            self.is_paused = False
             thread = self._thread
             self._thread = None
 
@@ -40,34 +66,95 @@ class BotRuntime:
             thread.join(timeout=5)
         self.is_running = False
 
-    def pause(self) -> None:
-        self._pause_event.set()
-        self.is_paused = True
-
-    def resume(self) -> None:
-        self._pause_event.clear()
-        self.is_paused = False
-
     def set_mode(self, mode: str) -> None:
         self.mode = mode
 
     def status(self) -> dict:
         return {
             "is_running": self.is_running,
-            "is_paused": self.is_paused,
             "mode": self.mode,
             "last_update_ts": self.last_update_ts,
         }
 
-    def _run_loop(self) -> None:
+    def _run_sim_pipeline(self) -> None:
         try:
-            while not self.stop_event.is_set():
-                if self._pause_event.is_set():
-                    self.is_paused = True
-                    time.sleep(0.2)
-                    continue
-                self.is_paused = False
+            config = self._load_sim_config()
+            provider = BinanceKlinesProvider()
+            end_time = datetime.now(timezone.utc)
+            start_time = end_time - timedelta(days=config.lookback_days)
+            data_by_symbol = {}
+            for symbol in config.symbols:
+                if self.stop_event.is_set():
+                    return
+                data_by_symbol[symbol] = provider.get_ohlcv(
+                    symbol, config.interval, start_time, end_time
+                )
                 self.last_update_ts = time.time()
-                time.sleep(1)
+
+            strategy = SimTrendStrategy()
+            risk_manager = RiskManager(
+                max_open_positions=1,
+                risk_per_trade_pct=0.02,
+                daily_drawdown_limit_pct=0.05,
+                cooldown_candles_after_loss=3,
+                stop_loss_pct=strategy.stop_loss_pct,
+                take_profit_pct=strategy.take_profit_pct,
+                trailing_stop_pct=None,
+                max_holding_candles=strategy.max_holding_candles,
+            )
+            backtester = Backtester(
+                initial_balance=config.initial_balance,
+                fee_rate=config.fee_rate,
+                slippage_bps=config.slippage_bps,
+                buffer_bps=10,
+                risk_manager=risk_manager,
+            )
+            backtester.run(strategy, data_by_symbol)
+            self.last_update_ts = time.time()
         finally:
             self.is_running = False
+
+    def _run_live_engine(self) -> None:
+        try:
+            symbols = self._parse_symbols(os.getenv("LIVE_SYMBOLS"), ["BTCUSDT"])
+            ws_url = os.getenv("LIVE_WS_URL", "wss://stream.binance.com:9443/ws")
+            poll_interval = float(os.getenv("LIVE_POLL_INTERVAL", "0.5"))
+            stream_cache = BinanceStreamCache(ws_url=ws_url)
+            for symbol in symbols:
+                stream_cache.ensure_price_stream(symbol)
+
+            while not self.stop_event.is_set():
+                updated = False
+                for symbol in symbols:
+                    price = stream_cache.get_price(symbol)
+                    if price is None:
+                        continue
+                    updated = True
+                    self.last_update_ts = time.time()
+                if not updated:
+                    time.sleep(poll_interval)
+        finally:
+            self.is_running = False
+
+    def _load_sim_config(self) -> SimConfig:
+        symbols = self._parse_symbols(os.getenv("SIM_SYMBOLS"), ["BTCUSDT"])
+        interval = os.getenv("SIM_INTERVAL", "1h")
+        lookback_days = int(os.getenv("SIM_LOOKBACK_DAYS", "30"))
+        initial_balance = float(os.getenv("SIM_INITIAL_BALANCE", "1000"))
+        fee_rate = float(os.getenv("SIM_FEE_RATE", "0.001"))
+        slippage_bps = float(os.getenv("SIM_SLIPPAGE_BPS", "5"))
+        return SimConfig(
+            symbols=symbols,
+            interval=interval,
+            lookback_days=lookback_days,
+            initial_balance=initial_balance,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
+        )
+
+    @staticmethod
+    def _parse_symbols(value: Optional[str], default: list[str]) -> list[str]:
+        if not value:
+            return default
+        symbols = [item.strip().upper() for item in value.replace("\n", ",").split(",")]
+        return [symbol for symbol in symbols if symbol] or default

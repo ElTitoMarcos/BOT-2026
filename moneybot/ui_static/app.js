@@ -22,7 +22,6 @@ const envValue = document.getElementById("env-value");
 
 const startButton = document.getElementById("start-btn");
 const stopButton = document.getElementById("stop-btn");
-const pauseResumeButton = document.getElementById("pause-resume-btn");
 const modeSelect = document.getElementById("mode-select");
 const toast = document.getElementById("toast");
 const dataDownloadButton = document.getElementById("data-download-btn");
@@ -146,9 +145,6 @@ const refreshStatus = async () => {
     renderKeyValue(statusContainer, data);
     if (data?.mode) {
       modeSelect.value = data.mode;
-    }
-    if (typeof data?.is_paused === "boolean") {
-      pauseResumeButton.textContent = data.is_paused ? "Resume" : "Pause";
     }
     statusUpdated.textContent = `Actualizado: ${new Date().toLocaleTimeString()}`;
   } catch (error) {
@@ -377,15 +373,6 @@ startButton.addEventListener("click", () => {
 
 stopButton.addEventListener("click", () => {
   runControlAction("/control/stop", null, "Bot detenido");
-});
-
-pauseResumeButton.addEventListener("click", () => {
-  const shouldResume = currentStatus?.is_paused;
-  if (shouldResume) {
-    runControlAction("/control/resume", null, "Bot reanudado");
-  } else {
-    runControlAction("/control/pause", null, "Bot pausado");
-  }
 });
 
 modeSelect.addEventListener("change", (event) => {

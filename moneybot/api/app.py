@@ -34,7 +34,7 @@ class ConfigPayload(BaseModel):
 
 
 class ModePayload(BaseModel):
-    mode: Literal["BACKTEST", "PAPER", "TESTNET", "LIVE"]
+    mode: Literal["SIM", "LIVE"]
 
 
 class DataDownloadPayload(BaseModel):
@@ -77,18 +77,6 @@ def control_start() -> dict:
 @app.post("/control/stop")
 def control_stop() -> dict:
     runtime.stop()
-    return runtime.status()
-
-
-@app.post("/control/pause")
-def control_pause() -> dict:
-    runtime.pause()
-    return runtime.status()
-
-
-@app.post("/control/resume")
-def control_resume() -> dict:
-    runtime.resume()
     return runtime.status()
 
 
