@@ -2,6 +2,7 @@ const tabButtons = document.querySelectorAll(".tab-button");
 const panels = document.querySelectorAll(".panel");
 
 const statusContainer = document.getElementById("status-data");
+const statusSummary = document.getElementById("status-summary");
 const healthContainer = document.getElementById("health-data");
 const metricsContainer = document.getElementById("metrics-data");
 const tradesContainer = document.getElementById("trades-data");
@@ -68,6 +69,52 @@ const formatValue = (value) => {
   if (typeof value === "number") return value.toFixed(4);
   if (typeof value === "boolean") return value ? "Sí" : "No";
   return String(value);
+};
+
+const formatDuration = (seconds) => {
+  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) {
+    return "N/A";
+  }
+  const totalSeconds = Math.max(0, Math.floor(Number(seconds)));
+  const minutes = Math.floor(totalSeconds / 60);
+  const remaining = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`;
+};
+
+const formatLastUpdate = (status) => {
+  const iso = status?.last_update_iso;
+  const age = status?.last_update_age_s;
+  if (!iso) {
+    return "Última actualización: N/A";
+  }
+  const timeLabel = new Date(iso).toLocaleTimeString();
+  const ageLabel =
+    age === null || age === undefined ? "N/A" : `${Math.max(0, Math.round(age))}s`;
+  return `Última actualización: ${timeLabel} (hace ${ageLabel})`;
+};
+
+const formatEventRates = (rates) => {
+  const aggTrade = rates?.aggTrade ?? 0;
+  const depth = rates?.depth ?? 0;
+  const bookTicker = rates?.bookTicker ?? 0;
+  return `Eventos/s: aggTrade=${aggTrade.toFixed(2)}, depth=${depth.toFixed(
+    2,
+  )}, bookTicker=${bookTicker.toFixed(2)}`;
+};
+
+const renderStatusSummary = (status) => {
+  if (!statusSummary) return;
+  const lines = [
+    formatLastUpdate(status),
+    `Uptime: ${formatDuration(status?.uptime_s)}`,
+    formatEventRates(status?.event_rate_per_s || {}),
+    `Edad último evento WS: ${
+      status?.last_ws_event_age_ms === null || status?.last_ws_event_age_ms === undefined
+        ? "N/A"
+        : `${Math.max(0, Math.round(status.last_ws_event_age_ms))} ms`
+    }`,
+  ];
+  statusSummary.innerHTML = lines.map((line) => `<div>${line}</div>`).join("");
 };
 
 const renderKeyValue = (target, data) => {
@@ -162,7 +209,18 @@ const refreshStatus = async () => {
   try {
     const data = await fetchJson("/status");
     currentStatus = data;
-    renderKeyValue(statusContainer, data);
+    renderStatusSummary(data);
+    const statusExtras = { ...data };
+    [
+      "last_update_iso",
+      "last_update_age_s",
+      "uptime_s",
+      "event_rate_per_s",
+      "last_ws_event_age_ms",
+    ].forEach((key) => {
+      delete statusExtras[key];
+    });
+    renderKeyValue(statusContainer, statusExtras);
     if (data?.mode) {
       modeSelect.value = data.mode;
     }

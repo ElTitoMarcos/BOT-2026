@@ -273,6 +273,13 @@
         font-size: 1rem;
         color: #cbd5f5;
       }
+      .status-summary {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 0.95rem;
+        margin-bottom: 10px;
+      }
       .progress-steps {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -343,6 +350,7 @@
           <div class="stack">
             <div class="card">
               <h3>Status</h3>
+              <div id="status-summary" class="status-summary"></div>
               <div id="status-data" class="kv compact"></div>
               <div class="timestamp" id="status-updated"></div>
               <div class="error" id="status-error"></div>
