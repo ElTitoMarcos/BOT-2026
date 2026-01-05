@@ -5,7 +5,6 @@ import math
 import threading
 import time
 import requests
-import websocket
 import json
 import ccxt
 import pygame
@@ -23,14 +22,23 @@ from . import exchange_filters
 from .strategy import Strategy
 from .config import get_binance_credentials, load_environment, save_binance_credentials
 from .risk import RiskManager
+from .rate_limiter import BinanceRateLimiter, BinanceRestClient
+from .market_streams import BinanceStreamCache
 
 class MoneyBotApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Money Bot")
         pygame.mixer.init()
-        self.strategy = Strategy(error_handler=self.guardar_error, error_sound=self.play_error_sound)
-        self.klines_provider = BinanceKlinesProvider()
+        self.rate_limiter = BinanceRateLimiter()
+        self.rest_client = BinanceRestClient(rate_limiter=self.rate_limiter)
+        self.stream_cache = BinanceStreamCache()
+        self.strategy = Strategy(
+            error_handler=self.guardar_error,
+            error_sound=self.play_error_sound,
+            rest_client=self.rest_client,
+        )
+        self.klines_provider = BinanceKlinesProvider(rest_client=self.rest_client)
         self.client = None
         self.comision_porcentaje = 0.15
         self.fee_rate = 0.001
@@ -184,9 +192,11 @@ class MoneyBotApp(tk.Tk):
         min_qty_usdt = self.obtener_minima_cantidad_usdt() 
         self.min_qty_usdt = min_qty_usdt
 
-        url = "https://api.binance.com/api/v3/exchangeInfo"
-        response = requests.get(url)
-        data = response.json()
+        try:
+            data = self.rest_client.get_json("/api/v3/exchangeInfo", weight=10)
+        except requests.RequestException as exc:
+            print(f"Error al consultar exchangeInfo: {exc}")
+            return
         
         # Filtrar los símbolos que contienen 'BTC'
         pares_btc = [symbol['symbol'] for symbol in data['symbols'] if 'BTC' in symbol['symbol']]
@@ -1204,9 +1214,10 @@ class MoneyBotApp(tk.Tk):
                 # Implementar el mecanismo de reintento para la llamada a la API
                 while True:
                     try:
-                        response = requests.get("https://api.binance.com/api/v3/ticker/24hr")
-                        response.raise_for_status()  # Levantar un HTTPError para respuestas malas (4xx y 5xx)
-                        tickers = response.json()
+                        tickers = self.rest_client.get_json(
+                            "/api/v3/ticker/24hr",
+                            weight=40,
+                        )
                         break  # Salir del bucle si se obtienen los datos con éxito
                     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
                         print(f"Error de conexión: {e}. Reintentando en 5 segundos...")
@@ -1396,33 +1407,23 @@ class MoneyBotApp(tk.Tk):
 
     def convertir_usdt_a_btc(self):
         try:
-            # Define la URL de la API de Binance para el precio de BTCUSDT
-            api_url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+            self.stream_cache.ensure_price_stream("BTCUSDT")
+            precio_btcusdt = self.stream_cache.get_price("BTCUSDT")
+            if precio_btcusdt is None:
+                response_data = self.rest_client.get_json(
+                    "/api/v3/ticker/price",
+                    params={"symbol": "BTCUSDT"},
+                    weight=1,
+                )
+                precio_btcusdt = float(response_data["price"])
 
-            # Realizar la solicitud GET a la API con un tiempo de espera de 10 segundos
-            response = requests.get(api_url, timeout=10)
-            response.raise_for_status()  # Esto generará una excepción para códigos de estado HTTP 4xx/5xx
-            response_data = response.json()
+            cantidad_btc = self.cantidad_operacion_usdt / precio_btcusdt
+            self.min_qty_btc = (self.cantidad_operacion_usdt - 0.5) / precio_btcusdt
 
-            # Verificar si la respuesta contiene el precio de BTCUSDT
-            if 'price' in response_data:
-                # Obtén el precio de BTCUSDT del mensaje
-                precio_btcusdt = float(response_data['price'])
+            if cantidad_btc is not None:
+                cantidad_btc = round(cantidad_btc, 8)
 
-                # Calcular la cantidad de BTC equivalente a la cantidad de USDT ingresada
-                cantidad_btc = self.cantidad_operacion_usdt / precio_btcusdt
-
-                self.min_qty_btc = (self.cantidad_operacion_usdt - 0.5) / precio_btcusdt
-
-                # Redondear la cantidad de BTC a 8 decimales si no es None
-                if cantidad_btc is not None:
-                    cantidad_btc = round(cantidad_btc, 8)
-
-                # Devolver la cantidad de BTC calculada
-                return cantidad_btc
-            else:
-                print("Error: No se pudo obtener el precio de BTCUSDT")
-                return None
+            return cantidad_btc
 
         except requests.exceptions.Timeout:
             pygame.mixer.music.load('error.mp3')
@@ -1437,39 +1438,52 @@ class MoneyBotApp(tk.Tk):
 
     def actualizar_libro_ordenes(self, symbol):
         if not self.error_1003:
-            base_url = 'https://api.binance.com'  # Base URL for Binance API
-            for intento in range(5):
-                try:
-                    # Envoltorio para manejar el timeout
-                    response = self.client._request(method='get', uri=f'{base_url}/api/v3/depth', params={'symbol': symbol, 'limit': 10}, signed=False, timeout=10)
-                    order_book = response  # Directly use the response as it is already a dictionary
-                    
-                    buy_orders = order_book['bids']
-                    sell_orders = order_book['asks']
+            self.stream_cache.ensure_order_book_stream(symbol)
+            order_book = self.stream_cache.get_order_book(symbol)
+            if order_book:
+                buy_orders = order_book['bids']
+                sell_orders = order_book['asks']
 
-                    buy_volume = sum(float(order[1]) for order in buy_orders)
-                    sell_volume = sum(float(order[1]) for order in sell_orders)
-                    
-                    total_volume = buy_volume + sell_volume
-                    porcentaje_compra = (buy_volume / total_volume) * 100 if total_volume != 0 else 0
+                buy_volume = sum(float(order[1]) for order in buy_orders)
+                sell_volume = sum(float(order[1]) for order in sell_orders)
 
-                    return {
-                        "order_book": order_book,
-                        "porcentaje_compra": porcentaje_compra
-                    }
-                except BinanceAPIException as e:
-                    pygame.mixer.music.load('error.mp3')
-                    pygame.mixer.music.play()
-                    if e.code == -1003:
-                        print("Error -1003: Demasiado peso utilizado para llamar a la API. Deteniendo el programa para evitar un posible baneo de la API.")
-                        self.error_1003 = True  # Detener el programa
-                        return None
-                    else:
-                        # print(f"Error al actualizar el libro de órdenes para {symbol}: {e}. Reintentando en {2 ** intento} segundos...")
-                        time.sleep(2 ** intento)  # Backoff exponencial
-                except RequestException as e:
-                    # print(f"Error de red al actualizar el libro de órdenes para {symbol}: {e}. Reintentando en {2 ** intento} segundos...")
-                    time.sleep(2 ** intento)  # Backoff exponencial
+                total_volume = buy_volume + sell_volume
+                porcentaje_compra = (buy_volume / total_volume) * 100 if total_volume != 0 else 0
+
+                return {
+                    "order_book": order_book,
+                    "porcentaje_compra": porcentaje_compra
+                }
+
+            try:
+                order_book = self.rest_client.get_json(
+                    "/api/v3/depth",
+                    params={"symbol": symbol, "limit": 10},
+                    weight=1,
+                )
+
+                buy_orders = order_book['bids']
+                sell_orders = order_book['asks']
+
+                buy_volume = sum(float(order[1]) for order in buy_orders)
+                sell_volume = sum(float(order[1]) for order in sell_orders)
+
+                total_volume = buy_volume + sell_volume
+                porcentaje_compra = (buy_volume / total_volume) * 100 if total_volume != 0 else 0
+
+                return {
+                    "order_book": order_book,
+                    "porcentaje_compra": porcentaje_compra
+                }
+            except BinanceAPIException as e:
+                pygame.mixer.music.load('error.mp3')
+                pygame.mixer.music.play()
+                if e.code == -1003:
+                    print("Error -1003: Demasiado peso utilizado para llamar a la API. Deteniendo el programa para evitar un posible baneo de la API.")
+                    self.error_1003 = True  # Detener el programa
+                    return None
+            except RequestException:
+                pass
 
             print(f"Error al actualizar el libro de órdenes para {symbol} después de múltiples intentos.")
             error_msg = f"Error al actualizar el libro de órdenes para {symbol} después de múltiples intentos.\n"
