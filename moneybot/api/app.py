@@ -21,7 +21,7 @@ runtime = BotRuntime()
 observability = ObservabilityStore()
 backtest_jobs = BacktestJobManager()
 LOG_PATH = Path("logs/moneybot.log")
-UI_DIR = Path(__file__).resolve().parent / "ui_static"
+UI_DIR = Path(__file__).resolve().parent.parent / "ui_static"
 
 load_env()
 
