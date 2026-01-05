@@ -77,9 +77,7 @@ class BinanceKlinesProvider(IDataProvider):
             raise ValueError("start_ts_ms debe ser menor o igual que end_ts_ms")
 
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        cache_path = self.data_dir / self._cache_filename(
-            symbol, interval, start_ms, end_ms
-        )
+        cache_path = self.data_dir / self._cache_filename(symbol, interval)
 
         cached = self._load_cache(cache_path)
         if cached.empty:
@@ -107,16 +105,15 @@ class BinanceKlinesProvider(IDataProvider):
                     data = pd.concat([data, after], ignore_index=True)
 
         data = data.drop_duplicates(subset=["timestamp"]).sort_values("timestamp")
-        data = data[(data["timestamp"] >= start_ms) & (data["timestamp"] <= end_ms)]
         data.reset_index(drop=True, inplace=True)
         data.to_csv(cache_path, index=False)
-        return data[OHLCV_COLUMNS]
+        requested = data[(data["timestamp"] >= start_ms) & (data["timestamp"] <= end_ms)]
+        requested = requested.reset_index(drop=True)
+        return requested[OHLCV_COLUMNS]
 
-    def _cache_filename(
-        self, symbol: str, interval: str, start_ms: int, end_ms: int
-    ) -> str:
+    def _cache_filename(self, symbol: str, interval: str) -> str:
         safe_symbol = symbol.replace("/", "-")
-        return f"{safe_symbol}_{interval}_{start_ms}_{end_ms}.csv"
+        return f"{safe_symbol}_{interval}.csv"
 
     def _load_cache(self, path: Path) -> pd.DataFrame:
         if not path.exists():
