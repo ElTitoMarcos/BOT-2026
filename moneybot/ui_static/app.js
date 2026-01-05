@@ -5,18 +5,15 @@ const statusContainer = document.getElementById("status-data");
 const metricsContainer = document.getElementById("metrics-data");
 const tradesContainer = document.getElementById("trades-data");
 const logsContainer = document.getElementById("logs-data");
-const dataContainer = document.getElementById("data-list");
 const statusError = document.getElementById("status-error");
 const metricsError = document.getElementById("metrics-error");
 const tradesError = document.getElementById("trades-error");
 const logsError = document.getElementById("logs-error");
-const dataError = document.getElementById("data-error");
 const backtestError = document.getElementById("backtest-error");
 const statusUpdated = document.getElementById("status-updated");
 const metricsUpdated = document.getElementById("metrics-updated");
 const tradesUpdated = document.getElementById("trades-updated");
 const logsUpdated = document.getElementById("logs-updated");
-const dataUpdated = document.getElementById("data-updated");
 const backtestUpdated = document.getElementById("backtest-updated");
 const envValue = document.getElementById("env-value");
 
@@ -24,11 +21,6 @@ const startButton = document.getElementById("start-btn");
 const stopButton = document.getElementById("stop-btn");
 const modeSelect = document.getElementById("mode-select");
 const toast = document.getElementById("toast");
-const dataDownloadButton = document.getElementById("data-download-btn");
-const dataSymbols = document.getElementById("data-symbols");
-const dataInterval = document.getElementById("data-interval");
-const dataStartDate = document.getElementById("data-start-date");
-const dataEndDate = document.getElementById("data-end-date");
 const backtestRunButton = document.getElementById("backtest-run-btn");
 const backtestDownloadButton = document.getElementById("backtest-download-btn");
 const backtestSymbols = document.getElementById("backtest-symbols");
@@ -215,42 +207,6 @@ const refreshLogs = async () => {
   }
 };
 
-const renderDataList = (datasets) => {
-  dataContainer.innerHTML = "";
-  if (!datasets.length) {
-    dataContainer.innerHTML = '<p class="muted">Sin datasets disponibles.</p>';
-    return;
-  }
-  const columns = Object.keys(datasets[0]);
-  const table = document.createElement("table");
-  const thead = document.createElement("thead");
-  thead.innerHTML = `<tr>${columns
-    .map((col) => `<th>${col}</th>`)
-    .join("")}</tr>`;
-  table.appendChild(thead);
-  const tbody = document.createElement("tbody");
-  datasets.forEach((dataset) => {
-    const row = document.createElement("tr");
-    row.innerHTML = columns
-      .map((col) => `<td>${formatValue(dataset[col])}</td>`)
-      .join("");
-    tbody.appendChild(row);
-  });
-  table.appendChild(tbody);
-  dataContainer.appendChild(table);
-};
-
-const refreshDataList = async () => {
-  dataError.textContent = "";
-  try {
-    const data = await fetchJson("/data/list");
-    const datasets = Array.isArray(data) ? data : data.datasets || [];
-    renderDataList(datasets);
-    dataUpdated.textContent = `Actualizado: ${new Date().toLocaleTimeString()}`;
-  } catch (error) {
-    dataError.textContent = error.message;
-  }
-};
 
 const renderBacktestSummary = (summary) => {
   if (!summary || Object.keys(summary).length === 0) {
@@ -397,7 +353,6 @@ const refreshAll = () => {
   refreshMetrics();
   refreshTrades();
   refreshLogs();
-  refreshDataList();
 };
 
 const runControlAction = async (url, payload, successMessage) => {
@@ -429,31 +384,6 @@ modeSelect.addEventListener("change", (event) => {
   runControlAction("/control/set-mode", { mode }, `Modo actualizado a ${mode}`);
 });
 
-dataDownloadButton.addEventListener("click", async () => {
-  const symbols = dataSymbols.value
-    .split(/[\n,]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const payload = {
-    symbols,
-    interval: dataInterval.value || null,
-    start_date: dataStartDate.value || null,
-    end_date: dataEndDate.value || null,
-  };
-  try {
-    await fetchJson("/data/download", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-    showToast("Descarga solicitada");
-    refreshDataList();
-  } catch (error) {
-    showToast(error.message, true);
-  }
-});
 
 backtestRunButton.addEventListener("click", async () => {
   backtestError.textContent = "";

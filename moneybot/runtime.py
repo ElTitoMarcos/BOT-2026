@@ -8,7 +8,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from moneybot.backtest import Backtester
+from moneybot.backtest.replay import replay_from_datastore
+from moneybot.config import HF_INTERVAL, LOOKBACK_DAYS_DEFAULT
 from moneybot.data_provider import BinanceKlinesProvider
+from moneybot.datastore import DataStore
+from moneybot.market.recorder import BinanceHFRecorder
 from moneybot.market_streams import BinanceStreamCache
 from moneybot.risk import RiskManager
 from moneybot.strategy import Strategy
@@ -79,17 +83,44 @@ class BotRuntime:
     def _run_sim_pipeline(self) -> None:
         try:
             config = self._load_sim_config()
-            provider = BinanceKlinesProvider()
             end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(days=config.lookback_days)
             data_by_symbol = {}
-            for symbol in config.symbols:
-                if self.stop_event.is_set():
-                    return
-                data_by_symbol[symbol] = provider.get_ohlcv(
-                    symbol, config.interval, start_time, end_time
-                )
-                self.last_update_ts = time.time()
+            datastore = DataStore()
+            if not self._has_hf_coverage(datastore, config.symbols, start_time, end_time):
+                warmup_minutes = int(os.getenv("SIM_WARMUP_MINUTES", "10"))
+                recorder = BinanceHFRecorder(datastore=datastore)
+                recorder.start(config.symbols)
+                warmup_end = time.monotonic() + warmup_minutes * 60
+                while time.monotonic() < warmup_end:
+                    if self.stop_event.is_set():
+                        recorder.stop()
+                        return
+                    time.sleep(1)
+                recorder.stop()
+
+            data_by_symbol = replay_from_datastore(
+                datastore,
+                config.symbols,
+                start_dt=start_time,
+                end_dt=end_time,
+                interval=config.interval,
+            )
+            has_replay_data = (
+                any(not df.empty for df in data_by_symbol.values())
+                if data_by_symbol
+                else False
+            )
+            if not has_replay_data:
+                provider = BinanceKlinesProvider()
+                for symbol in config.symbols:
+                    if self.stop_event.is_set():
+                        return
+                    data_by_symbol[symbol] = provider.get_ohlcv(
+                        symbol, config.interval, start_time, end_time
+                    )
+                    self.last_update_ts = time.time()
+            self.last_update_ts = time.time()
 
             strategy = SimTrendStrategy()
             risk_manager = RiskManager(
@@ -138,8 +169,8 @@ class BotRuntime:
 
     def _load_sim_config(self) -> SimConfig:
         symbols = self._parse_symbols(os.getenv("SIM_SYMBOLS"), ["BTCUSDT"])
-        interval = os.getenv("SIM_INTERVAL", "1h")
-        lookback_days = int(os.getenv("SIM_LOOKBACK_DAYS", "30"))
+        interval = os.getenv("SIM_INTERVAL", HF_INTERVAL)
+        lookback_days = int(os.getenv("SIM_LOOKBACK_DAYS", str(LOOKBACK_DAYS_DEFAULT)))
         initial_balance = float(os.getenv("SIM_INITIAL_BALANCE", "1000"))
         fee_rate = float(os.getenv("SIM_FEE_RATE", "0.001"))
         slippage_bps = float(os.getenv("SIM_SLIPPAGE_BPS", "5"))
@@ -158,3 +189,15 @@ class BotRuntime:
             return default
         symbols = [item.strip().upper() for item in value.replace("\n", ",").split(",")]
         return [symbol for symbol in symbols if symbol] or default
+
+    @staticmethod
+    def _has_hf_coverage(
+        datastore: DataStore,
+        symbols: list[str],
+        start_time: datetime,
+        end_time: datetime,
+    ) -> bool:
+        for symbol in symbols:
+            if not datastore.has_coverage(symbol, start_time, end_time):
+                return False
+        return True

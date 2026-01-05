@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import deque
 from pathlib import Path
-from datetime import datetime, timezone
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -12,7 +11,6 @@ from pydantic import BaseModel
 
 from moneybot.backtest.runner import BacktestJobManager
 from moneybot.config import VALID_ENVIRONMENTS, get_config, load_env, save_config
-from moneybot.data_provider import BinanceKlinesProvider
 from moneybot.observability import ObservabilityStore
 from moneybot.runtime import BotRuntime
 
@@ -35,13 +33,6 @@ class ConfigPayload(BaseModel):
 
 class ModePayload(BaseModel):
     mode: Literal["SIM", "LIVE"]
-
-
-class DataDownloadPayload(BaseModel):
-    symbols: list[str]
-    interval: str
-    start_date: str
-    end_date: str
 
 
 class BacktestRunPayload(BaseModel):
@@ -140,47 +131,6 @@ def config_save(payload: ConfigPayload) -> dict:
         "has_api_key": bool(api_key),
         "env": env,
     }
-
-
-@app.post("/data/download")
-def data_download(payload: DataDownloadPayload) -> dict:
-    if not payload.symbols:
-        raise HTTPException(status_code=400, detail="Debe incluir al menos un símbolo.")
-    try:
-        start_dt = datetime.fromisoformat(payload.start_date).replace(tzinfo=timezone.utc)
-        end_dt = datetime.fromisoformat(payload.end_date).replace(tzinfo=timezone.utc)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Fechas inválidas: {exc}",
-        ) from exc
-    if start_dt > end_dt:
-        raise HTTPException(
-            status_code=400,
-            detail="start_date debe ser menor o igual que end_date",
-        )
-
-    provider = BinanceKlinesProvider()
-    files: list[str] = []
-    total_rows = 0
-    for symbol in payload.symbols:
-        df = provider.get_ohlcv(symbol, payload.interval, start_dt, end_dt)
-        total_rows += len(df)
-        files.append(str(provider.data_dir / provider._cache_filename(symbol, payload.interval)))
-    return {"ok": True, "files": files, "rows": total_rows}
-
-
-@app.get("/data/list")
-def data_list() -> dict:
-    data_dir = Path("./data")
-    if not data_dir.exists():
-        return {"files": []}
-    files = sorted(
-        str(path)
-        for path in data_dir.iterdir()
-        if path.is_file() and path.suffix in {".csv", ".parquet"}
-    )
-    return {"files": files}
 
 
 @app.post("/backtest/run")
