@@ -12,6 +12,7 @@ from moneybot.backtest.simulator import ExecutionSimulator, SimOrder
 from moneybot.config import LOOKBACK_DAYS_DEFAULT
 from moneybot.datastore import DataStore
 from moneybot.market.recorder import BinanceHFRecorder
+from moneybot.market.stream_metrics import StreamMetrics
 from moneybot.market_streams import BinanceStreamCache
 
 
@@ -80,6 +81,11 @@ class BotRuntime:
         self.stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self._uptime_start = time.monotonic()
+        self._ws_metrics = StreamMetrics(
+            streams=("aggTrade", "depth", "bookTicker"),
+            window_seconds=5.0,
+        )
 
     def start(self) -> None:
         with self._lock:
@@ -106,10 +112,25 @@ class BotRuntime:
         self.mode = mode
 
     def status(self) -> dict:
+        now = time.time()
+        last_update_iso = None
+        last_update_age_s = None
+        if self.last_update_ts is not None:
+            last_update_iso = datetime.fromtimestamp(
+                self.last_update_ts, tz=timezone.utc
+            ).isoformat()
+            last_update_age_s = max(0.0, now - self.last_update_ts)
+        ws_snapshot = self._ws_metrics.snapshot(
+            streams=("aggTrade", "depth", "bookTicker")
+        )
         return {
             "is_running": self.is_running,
             "mode": self.mode,
             "last_update_ts": self.last_update_ts,
+            "last_update_iso": last_update_iso,
+            "last_update_age_s": last_update_age_s,
+            "uptime_s": max(0.0, time.monotonic() - self._uptime_start),
+            **ws_snapshot,
         }
 
     def _run_sim_pipeline(self) -> None:
@@ -120,7 +141,10 @@ class BotRuntime:
             datastore = DataStore()
             if not self._has_hf_coverage(datastore, config.symbols, start_time, end_time):
                 warmup_minutes = int(os.getenv("SIM_WARMUP_MINUTES", "10"))
-                recorder = BinanceHFRecorder(datastore=datastore)
+                recorder = BinanceHFRecorder(
+                    datastore=datastore,
+                    metrics=self._ws_metrics,
+                )
                 recorder.start(config.symbols)
                 warmup_end = time.monotonic() + warmup_minutes * 60
                 while time.monotonic() < warmup_end:
@@ -166,7 +190,10 @@ class BotRuntime:
             symbols = self._parse_symbols(os.getenv("LIVE_SYMBOLS"), ["BTCUSDT"])
             ws_url = os.getenv("LIVE_WS_URL", "wss://stream.binance.com:9443/ws")
             poll_interval = float(os.getenv("LIVE_POLL_INTERVAL", "0.5"))
-            stream_cache = BinanceStreamCache(ws_url=ws_url)
+            stream_cache = BinanceStreamCache(
+                ws_url=ws_url,
+                metrics=self._ws_metrics,
+            )
             for symbol in symbols:
                 stream_cache.ensure_price_stream(symbol)
 

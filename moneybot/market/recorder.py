@@ -12,6 +12,7 @@ import websocket
 
 from moneybot.config import DEPTH_SPEED
 from moneybot.datastore import DataStore, normalize_timestamp
+from moneybot.market.stream_metrics import StreamMetrics
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class BinanceHFRecorder:
         ws_url: str = "wss://stream.binance.com:9443/stream",
         max_streams_per_connection: int = 200,
         depth_speed: str = DEPTH_SPEED,
+        metrics: Optional[StreamMetrics] = None,
     ) -> None:
         self.datastore = datastore or DataStore()
         self.ws_url = ws_url
@@ -38,6 +40,7 @@ class BinanceHFRecorder:
         self.depth_speed = depth_speed
         self._connections: list[RecorderConnection] = []
         self._lock = threading.Lock()
+        self._metrics = metrics
 
     def start(self, symbols: Iterable[str]) -> None:
         streams = self._build_streams(symbols)
@@ -87,6 +90,9 @@ class BinanceHFRecorder:
         while not stop_event.is_set():
             ws = websocket.WebSocketApp(
                 url,
+                on_open=lambda _ws: self._metrics.connection_open()
+                if self._metrics
+                else None,
                 on_message=lambda _ws, message: self._handle_message(message),
                 on_error=lambda _ws, error: LOGGER.warning(
                     "WS error (%s streams): %s", len(streams), error
@@ -98,6 +104,8 @@ class BinanceHFRecorder:
                 on_pong=lambda _ws, message: LOGGER.debug("WS pong %s", message),
             )
             ws.run_forever(ping_interval=20, ping_timeout=10)
+            if self._metrics:
+                self._metrics.connection_closed()
             if stop_event.is_set():
                 break
             delay = 1.0 + random.uniform(0, 2.0)
@@ -121,6 +129,8 @@ class BinanceHFRecorder:
         symbol = data.get("s")
         if not event_type or not symbol:
             return
+        if self._metrics and stream_type:
+            self._metrics.record_event(stream_type)
         event_ts = normalize_timestamp(data.get("T") or data.get("E"))
         if event_ts <= 0:
             event_ts = int(time.time() * 1000)

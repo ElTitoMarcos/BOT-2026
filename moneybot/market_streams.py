@@ -10,6 +10,7 @@ from typing import Dict, Optional
 
 import websocket
 
+from moneybot.market.stream_metrics import StreamMetrics
 
 LOGGER = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class BinanceStreamCache:
         self,
         ws_url: str = "wss://stream.binance.com:9443/ws",
         max_age_seconds: float = 2.5,
+        metrics: Optional[StreamMetrics] = None,
     ) -> None:
         self.ws_url = ws_url.rstrip("/")
         self.max_age_seconds = max_age_seconds
@@ -32,6 +34,7 @@ class BinanceStreamCache:
         self._prices: Dict[str, StreamSnapshot] = {}
         self._connections: Dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
+        self._metrics = metrics
 
     def ensure_order_book_stream(self, symbol: str, depth: int = 10) -> None:
         stream = f"{symbol.lower()}@depth{depth}@100ms"
@@ -77,6 +80,9 @@ class BinanceStreamCache:
         while True:
             ws = websocket.WebSocketApp(
                 url,
+                on_open=lambda _ws: self._metrics.connection_open()
+                if self._metrics
+                else None,
                 on_message=lambda _ws, message: handler(message),
                 on_error=lambda _ws, error: LOGGER.warning(
                     "WebSocket error en %s: %s", stream, error
@@ -86,6 +92,8 @@ class BinanceStreamCache:
                 ),
             )
             ws.run_forever(ping_interval=20, ping_timeout=10)
+            if self._metrics:
+                self._metrics.connection_closed()
             delay = 1.0 + random.uniform(0, 1.5)
             time.sleep(delay)
 
@@ -103,6 +111,8 @@ class BinanceStreamCache:
                     self._order_books[symbol] = StreamSnapshot(
                         payload=snapshot, updated_at=time.monotonic()
                     )
+                if self._metrics:
+                    self._metrics.record_event("depth")
             except json.JSONDecodeError:
                 LOGGER.warning("Mensaje WS inválido para order book %s", symbol)
         return _inner
@@ -120,6 +130,8 @@ class BinanceStreamCache:
                     self._prices[symbol] = StreamSnapshot(
                         payload={"price": price}, updated_at=time.monotonic()
                     )
+                if self._metrics:
+                    self._metrics.record_event("bookTicker")
             except (json.JSONDecodeError, ValueError):
                 LOGGER.warning("Mensaje WS inválido para precio %s", symbol)
         return _inner
