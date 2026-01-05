@@ -7,8 +7,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
 from moneybot.config import VALID_ENVIRONMENTS, get_config, load_env, save_config
+from moneybot.runtime import BotRuntime
 
 app = FastAPI(title="MoneyBot")
+runtime = BotRuntime()
 
 load_env()
 
@@ -39,6 +41,35 @@ def config_status() -> dict:
         "has_api_key": bool(config.get("BINANCE_API_KEY")),
         "env": config.get("ENV", "LIVE"),
     }
+
+
+@app.post("/control/start")
+def control_start() -> dict:
+    runtime.start()
+    return runtime.status()
+
+
+@app.post("/control/stop")
+def control_stop() -> dict:
+    runtime.stop()
+    return runtime.status()
+
+
+@app.post("/control/pause")
+def control_pause() -> dict:
+    runtime.pause()
+    return runtime.status()
+
+
+@app.post("/control/resume")
+def control_resume() -> dict:
+    runtime.resume()
+    return runtime.status()
+
+
+@app.get("/status")
+def runtime_status() -> dict:
+    return runtime.status()
 
 
 @app.post("/config/save")
