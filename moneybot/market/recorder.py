@@ -87,6 +87,27 @@ class BinanceHFRecorder:
     def _run_connection(self, streams: List[str], stop_event: threading.Event) -> None:
         query = "/".join(streams)
         url = f"{self.ws_url}?streams={query}&timeUnit=MICROSECOND"
+        last_error_message: Optional[str] = None
+        last_error_ts = 0.0
+
+        def on_error(_ws: websocket.WebSocketApp, error: object) -> None:
+            nonlocal last_error_message, last_error_ts
+            if stop_event.is_set():
+                return
+            message = str(error)
+            normalized = message.strip().lower()
+            now = time.monotonic()
+            if message == last_error_message and (now - last_error_ts) < 5.0:
+                return
+            last_error_message = message
+            last_error_ts = now
+            if normalized in {"stream is closed", "connection is already closed"} or isinstance(
+                error, websocket.WebSocketConnectionClosedException
+            ):
+                LOGGER.debug("WS cerrado inesperado (%s streams): %s", len(streams), message)
+                return
+            LOGGER.warning("WS error (%s streams): %s", len(streams), message)
+
         while not stop_event.is_set():
             ws = websocket.WebSocketApp(
                 url,
@@ -94,9 +115,7 @@ class BinanceHFRecorder:
                 if self._metrics
                 else None,
                 on_message=lambda _ws, message: self._handle_message(message),
-                on_error=lambda _ws, error: LOGGER.warning(
-                    "WS error (%s streams): %s", len(streams), error
-                ),
+                on_error=on_error,
                 on_close=lambda _ws, status, reason: LOGGER.info(
                     "WS cerrado (%s streams): %s %s", len(streams), status, reason
                 ),
