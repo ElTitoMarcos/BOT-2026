@@ -136,24 +136,26 @@ class BinanceHFRecorder:
         except json.JSONDecodeError:
             LOGGER.debug("Mensaje WS inválido")
             return
-
-        data = payload.get("data", payload)
-        stream = payload.get("stream")
-        stream_type = self._infer_stream(stream)
-        event_type = data.get("e") or stream_type
-        if event_type == "depthUpdate":
-            event_type = "depth"
-        if stream_type in {"depth", "bookTicker", "aggTrade"}:
-            event_type = stream_type
-        symbol = data.get("s")
-        if not event_type or not symbol:
-            return
-        if self._metrics and stream_type:
-            self._metrics.record_event(stream_type)
-        event_ts = normalize_timestamp(data.get("T") or data.get("E"))
-        if event_ts <= 0:
-            event_ts = int(time.time() * 1000)
-        self.datastore.write_event(symbol, event_type, data, event_ts)
+        try:
+            data = payload.get("data", payload)
+            stream = payload.get("stream")
+            stream_type = self._infer_stream(stream)
+            event_type = data.get("e") or stream_type
+            if event_type == "depthUpdate":
+                event_type = "depth"
+            if stream_type in {"depth", "bookTicker", "aggTrade"}:
+                event_type = stream_type
+            symbol = data.get("s")
+            if not event_type or not symbol:
+                return
+            if self._metrics and stream_type:
+                self._metrics.record_event(stream_type)
+            event_ts = normalize_timestamp(data.get("T") or data.get("E"))
+            if event_ts <= 0:
+                event_ts = int(time.time() * 1000)
+            self.datastore.write_event(symbol, event_type, data, event_ts)
+        except Exception as exc:
+            LOGGER.debug("Error procesando mensaje WS: %s", exc)
 
     @staticmethod
     def _infer_stream(stream_name: Optional[str]) -> Optional[str]:
