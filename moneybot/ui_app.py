@@ -21,6 +21,7 @@ from socket import gaierror
 from .data_provider import BinanceKlinesProvider
 from .strategy import Strategy
 from .config import get_binance_credentials, load_environment, save_binance_credentials
+from .risk import RiskManager
 
 class MoneyBotApp(tk.Tk):
     def __init__(self):
@@ -60,6 +61,16 @@ class MoneyBotApp(tk.Tk):
         self.condiciones_operar = None
         self.cantidad_btc = 0
         self.perdidas = []
+        self.risk_manager = RiskManager(
+            max_open_positions=5,
+            risk_per_trade_pct=0.01,
+            daily_drawdown_limit_pct=0.05,
+            cooldown_candles_after_loss=3,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=None,
+            max_holding_candles=24,
+        )
 
         self.api_key = None
         self.api_secret = None
@@ -225,6 +236,12 @@ class MoneyBotApp(tk.Tk):
 
     def realizar_compra(self, symbol):
         try:
+            self.actualizar_estado_riesgo()
+            if self.risk_manager.kill_switch_triggered():
+                print("Kill switch activo: drawdown diario superado. Trading pausado.")
+                return
+            if not self.risk_manager.can_open_trade(self.total_ordenes):
+                return
             # Verificar el número de órdenes abiertas para el símbolo
             if self.cantidad_ordenes.get(symbol, 0) >= 3:
                 # print(f"Se encontraron {self.cantidad_ordenes[symbol]} órdenes abiertas para {symbol}. No se realizarán más compras.")
@@ -723,9 +740,12 @@ class MoneyBotApp(tk.Tk):
                 tick_size = self.client.get_symbol_info(symbol)['filters'][0]['tickSize']
                 tick_size = float(tick_size)
 
-                target_price = order_price * (
-                    1 + 2 * self.fee_rate + self.buffer_bps / 10000
+                min_take_profit = 2 * self.fee_rate + self.buffer_bps / 10000
+                take_profit_pct = max(
+                    min_take_profit,
+                    self.risk_manager.take_profit_pct or 0,
                 )
+                target_price = order_price * (1 + take_profit_pct)
                 precio_venta = math.ceil(target_price / tick_size) * tick_size
                 precio_venta = round(precio_venta, 8)
 
@@ -839,6 +859,8 @@ class MoneyBotApp(tk.Tk):
                         self.saldo_insuficiente = False
                         pygame.mixer.music.load('venta_finalizada.mp3')
                         pygame.mixer.music.play()
+                        if Perdidas:
+                            self.risk_manager.register_trade_result(-1)
                         break
 
                 order_status = None
@@ -1649,6 +1671,12 @@ class MoneyBotApp(tk.Tk):
             pygame.mixer.music.play()
             print(f"Error al obtener el saldo de BTC: {e}")
             return None
+
+    def actualizar_estado_riesgo(self):
+        balance_btc = self.get_btc_balance()
+        if balance_btc is None:
+            return
+        self.risk_manager.update_equity(balance_btc, datetime.now(timezone.utc))
 
     def obtener_minima_cantidad_usdt(self):
         try:
