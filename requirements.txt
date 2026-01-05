@@ -3,3 +3,4 @@ pandas_ta
 fastapi
 uvicorn
 zstandard
+email-validator>=2
