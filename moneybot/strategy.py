@@ -1,6 +1,9 @@
 import time
 from typing import Callable, Iterable, List, Optional
 
+import pandas as pd
+import pandas_ta as ta
+
 
 class Strategy:
     def __init__(
@@ -17,22 +20,44 @@ class Strategy:
         if self.error_handler:
             self.error_handler(message)
 
-    def identificar_tendencia(self, summary, symbol):
-        recommendation = summary.get('RECOMMENDATION', 'NEUTRAL')
-        tendencia = 'LATERAL'
-        if recommendation == 'BUY':
-            tendencia = 'ALCISTA'
-        elif recommendation == 'SELL':
-            tendencia = 'BAJISTA'
+    def _tendencia_desde_indicadores(
+        self, ema_20: float, ema_50: float, rsi_14: float
+    ) -> str:
+        if pd.isna(ema_20) or pd.isna(ema_50) or pd.isna(rsi_14):
+            return "LATERAL"
+        if ema_20 > ema_50 and rsi_14 > 50:
+            return "ALCISTA"
+        if ema_20 < ema_50 and rsi_14 < 50:
+            return "BAJISTA"
+        return "LATERAL"
 
-        # print(f"Tendencia identificada para {symbol}: {tendencia}")
+    def calcular_tendencias(self, candles: pd.DataFrame) -> pd.Series:
+        if candles is None or candles.empty or "close" not in candles.columns:
+            return pd.Series(dtype=str)
+
+        close_prices = pd.to_numeric(candles["close"], errors="coerce")
+        ema_20 = ta.ema(close_prices, length=20)
+        ema_50 = ta.ema(close_prices, length=50)
+        rsi_14 = ta.rsi(close_prices, length=14)
+
+        tendencia = pd.Series("LATERAL", index=candles.index)
+        alcista = (ema_20 > ema_50) & (rsi_14 > 50)
+        bajista = (ema_20 < ema_50) & (rsi_14 < 50)
+        tendencia = tendencia.mask(alcista, "ALCISTA")
+        tendencia = tendencia.mask(bajista, "BAJISTA")
         return tendencia
+
+    def identificar_tendencia(self, candles: pd.DataFrame) -> str:
+        tendencias = self.calcular_tendencias(candles)
+        if tendencias.empty:
+            return "LATERAL"
+        return tendencias.iloc[-1]
 
     def seleccionar_simbolos(
         self,
         tickers,
-        analizar_grafico_4h: Callable[[str], dict],
-        analizar_grafico_5m: Callable[[str], dict],
+        analizar_grafico_4h: Callable[[str], pd.DataFrame],
+        analizar_grafico_5m: Callable[[str], pd.DataFrame],
     ) -> List[str]:
         symbols_list: List[str] = []
         for ticker in tickers:
@@ -49,10 +74,10 @@ class Strategy:
                 # Verificar si el cambio de precio en las últimas 24 horas está dentro del rango especificado (-6% a 10%)
                 if -6 <= price_change_percent <= 10:
                     # Obtener el análisis del gráfico
-                    summary_4h = analizar_grafico_4h(symbol)
-                    tendencia_4h = self.identificar_tendencia(summary_4h, symbol)
-                    summary_5m = analizar_grafico_5m(symbol)
-                    tendencia_5m = self.identificar_tendencia(summary_5m, symbol)
+                    candles_4h = analizar_grafico_4h(symbol)
+                    tendencia_4h = self.identificar_tendencia(candles_4h)
+                    candles_5m = analizar_grafico_5m(symbol)
+                    tendencia_5m = self.identificar_tendencia(candles_5m)
                     if tendencia_4h != 'BAJISTA' and tendencia_5m == 'ALCISTA':
                         symbols_list.append(symbol)
 

@@ -13,12 +13,12 @@ import pandas as pd
 import numpy as np
 from time import sleep
 from requests.exceptions import RequestException
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from concurrent.futures import ThreadPoolExecutor
 from socket import gaierror
-from tradingview_ta import TA_Handler, Interval, Exchange
+from .data_provider import BinanceKlinesProvider
 from .strategy import Strategy
 from .config import get_binance_credentials, load_environment, save_binance_credentials
 
@@ -28,6 +28,7 @@ class MoneyBotApp(tk.Tk):
         self.title("Money Bot")
         pygame.mixer.init()
         self.strategy = Strategy(error_handler=self.guardar_error, error_sound=self.play_error_sound)
+        self.klines_provider = BinanceKlinesProvider()
         self.client = None
         self.comision_porcentaje = 0.15
         self.precio_anterior = 0.0
@@ -269,8 +270,8 @@ class MoneyBotApp(tk.Tk):
                 self.guardar_error(error_msg)
                 return
 
-            summary_5m = self.analizar_grafico_5m(symbol)
-            tendencia_5m = self.strategy.identificar_tendencia(summary_5m, symbol)
+            candles_5m = self.analizar_grafico_5m(symbol)
+            tendencia_5m = self.strategy.identificar_tendencia(candles_5m)
 
             if not recent_sell_trades and tendencia_5m != 'ALCISTA':
                 print(f"No hubo ventas en {nearest_sell_price} para {symbol} en las últimas 24 horas y la tendencia de 5min no es alcista, no se abrirá la orden de compra.")
@@ -442,12 +443,12 @@ class MoneyBotApp(tk.Tk):
                         break
 
                 # Obtener el análisis del gráfico
-                summary_1D = self.analizar_grafico_1D(symbol)
-                tendencia_1D = self.strategy.identificar_tendencia(summary_1D, symbol)
-                summary_4H = self.analizar_grafico_4H(symbol)
-                tendencia_4H = self.strategy.identificar_tendencia(summary_4H, symbol)
-                summary_5m = self.analizar_grafico_5m(symbol)
-                tendencia_5m = self.strategy.identificar_tendencia(summary_5m, symbol)
+                candles_1d = self.analizar_grafico_1D(symbol)
+                tendencia_1D = self.strategy.identificar_tendencia(candles_1d)
+                candles_4h = self.analizar_grafico_4H(symbol)
+                tendencia_4H = self.strategy.identificar_tendencia(candles_4h)
+                candles_5m = self.analizar_grafico_5m(symbol)
+                tendencia_5m = self.strategy.identificar_tendencia(candles_5m)
 
                 if tendencia_1D == 'BAJISTA' and tendencia_4H == 'BAJISTA': # se verifica si la tendencia de 1h es bajista, entonces no se opera
                     print(f"Se ha detectado una tendencia diaria y horaria bajista, eliminando la orden de compra de {symbol}")
@@ -783,10 +784,10 @@ class MoneyBotApp(tk.Tk):
                 porcentaje_compra = order_book_data['porcentaje_compra']
 
                 # Obtener el análisis del gráfico
-                summary_5m = self.analizar_grafico_5m(symbol)
-                tendencia_5m = self.strategy.identificar_tendencia(summary_5m, symbol)
-                summary_4H = self.analizar_grafico_4H(symbol)
-                tendencia_4H = self.strategy.identificar_tendencia(summary_4H, symbol)
+                candles_5m = self.analizar_grafico_5m(symbol)
+                tendencia_5m = self.strategy.identificar_tendencia(candles_5m)
+                candles_4h = self.analizar_grafico_4H(symbol)
+                tendencia_4H = self.strategy.identificar_tendencia(candles_4h)
 
                 #print(f"self.porcentaje_positivo_24h: {self.porcentaje_positivo_24h} self.cambio_positivo: {self.cambio_positivo} symbol: {symbol} tendencia_4H: {tendencia_4H} tendencia_5m: {tendencia_5m}")
 
@@ -1123,143 +1124,51 @@ class MoneyBotApp(tk.Tk):
 
         return x_sell_quantity, x_sell_price
 
+    def _obtener_candles(self, symbol, interval, lookback_candles):
+        minutes_per_candle = {
+            "1d": 24 * 60,
+            "4h": 4 * 60,
+            "5m": 5,
+        }
+        if interval not in minutes_per_candle:
+            return pd.DataFrame()
+
+        end_time = datetime.now(timezone.utc)
+        lookback_minutes = minutes_per_candle[interval] * lookback_candles
+        start_time = end_time - timedelta(minutes=lookback_minutes)
+
+        try:
+            return self.klines_provider.get_ohlcv(symbol, interval, start_time, end_time)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            print(f"Error de conexión al analizar gráfico {interval} para {symbol}: {e}. Reintentando en 5 segundos...")
+            sleep(5)
+            try:
+                return self.klines_provider.get_ohlcv(symbol, interval, start_time, end_time)
+            except Exception as retry_error:
+                print(f"Error al reintentar gráfico {interval} para {symbol}: {retry_error}")
+        except Exception as e:
+            print(f"Error al analizar gráfico {interval} para {symbol}: {e}")
+            error_msg = f"Error al analizar gráfico {interval} para {symbol}: {e}\n"
+            pygame.mixer.music.load('error.mp3')
+            pygame.mixer.music.play()
+            self.guardar_error(error_msg)
+
+        return pd.DataFrame()
+
     def analizar_grafico_1D(self, symbol):
-        exchanges = ["BINANCE", "HITBTC", "COINBASE", "KRAKEN", "BITFINEX"]
-        summary = None
-
-        for exchange in exchanges:
-            while True:
-                try:
-                    # Saltar pares que no están en la web
-                    if symbol == "MDXBTC" or symbol == "QUICKBTC" or symbol == "BETABTC":
-                        summary = {'RECOMMENDATION': 'LATERAL'}
-                        return summary
-
-                    # Saltar la combinación BINANCE y ALPACABTC
-                    if symbol == "ALPACABTC" and exchange == "BINANCE":
-                        break
-
-                    handler = TA_Handler(
-                        symbol=symbol,
-                        screener="crypto",
-                        exchange=exchange,
-                        interval=Interval.INTERVAL_1_DAY
-                    )
-                    analysis = handler.get_analysis()
-                    if analysis is not None and hasattr(analysis, 'summary'):
-                        summary = analysis.summary
-                        if summary:
-                            return summary
-                    break  # Salir del bucle si no hay errores y se obtiene el análisis
-
-                except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-                    print(f"Error de conexión al analizar gráfico 1D para {symbol} en {exchange}: {e}. Reintentando en 5 segundos...")
-                    sleep(5)  # Esperar 5 segundos antes de reintentar
-                except Exception as e:
-                    print(f"Error al analizar gráfico 1D para {symbol} en {exchange}: {e}")
-                    error_msg = f"Error al analizar gráfico 1D para {symbol} en {exchange}: {e}\n"
-                    pygame.mixer.music.load('error.mp3')
-                    pygame.mixer.music.play()
-                    self.guardar_error(error_msg)
-                    break  # Salir del bucle para errores no relacionados con la conexión
-
-        if summary is None:
-            # Establecer summary a un valor específico que identificar_tendencia pueda manejar
-            summary = {'RECOMMENDATION': 'LATERAL'}
-            
-        return summary
+        if symbol in {"MDXBTC", "QUICKBTC", "BETABTC"}:
+            return pd.DataFrame()
+        return self._obtener_candles(symbol, "1d", lookback_candles=120)
 
     def analizar_grafico_4H(self, symbol):
-        exchanges = ["BINANCE", "HITBTC", "COINBASE", "KRAKEN", "BITFINEX"]
-        summary = None
-
-        for exchange in exchanges:
-            while True:
-                try:
-                    # Saltar pares que no están en la web
-                    if symbol == "MDXBTC" or symbol == "QUICKBTC" or symbol == "BETABTC":
-                        summary = {'RECOMMENDATION': 'LATERAL'}
-                        return summary
-
-                    # Saltar la combinación BINANCE y ALPACABTC
-                    if symbol == "ALPACABTC" and exchange == "BINANCE":
-                        break
-
-                    handler = TA_Handler(
-                        symbol=symbol,
-                        screener="crypto",
-                        exchange=exchange,
-                        interval=Interval.INTERVAL_4_HOURS
-                    )
-                    analysis = handler.get_analysis()
-                    if analysis is not None and hasattr(analysis, 'summary'):
-                        summary = analysis.summary
-                        if summary:
-                            return summary
-                    break  # Salir del bucle si no hay errores y se obtiene el análisis
-
-                except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-                    print(f"Error de conexión al analizar gráfico 4H para {symbol} en {exchange}: {e}. Reintentando en 5 segundos...")
-                    sleep(5)  # Esperar 5 segundos antes de reintentar
-                except Exception as e:
-                    print(f"Error al analizar gráfico 4H para {symbol} en {exchange}: {e}")
-                    error_msg = f"Error al analizar gráfico 4H para {symbol} en {exchange}: {e}\n"
-                    pygame.mixer.music.load('error.mp3')
-                    pygame.mixer.music.play()
-                    self.guardar_error(error_msg)
-                    break  # Salir del bucle para errores no relacionados con la conexión
-
-        if summary is None:
-            # Establecer summary a un valor específico que identificar_tendencia pueda manejar
-            summary = {'RECOMMENDATION': 'LATERAL'}
-            
-        return summary
+        if symbol in {"MDXBTC", "QUICKBTC", "BETABTC"}:
+            return pd.DataFrame()
+        return self._obtener_candles(symbol, "4h", lookback_candles=200)
 
     def analizar_grafico_5m(self, symbol):
-        exchanges = ["BINANCE", "HITBTC", "COINBASE", "KRAKEN", "BITFINEX"]
-        summary = None
-
-        for exchange in exchanges:
-            while True:
-                try:
-                    # Saltar pares que no están en la web
-                    if symbol == "MDXBTC" or symbol == "QUICKBTC" or symbol == "BETABTC":
-                        summary = {'RECOMMENDATION': 'LATERAL'}
-                        return summary
-
-                    # Saltar la combinación BINANCE y ALPACABTC
-                    if symbol == "ALPACABTC" and exchange == "BINANCE":
-                        break
-
-                    handler = TA_Handler(
-                        symbol=symbol,
-                        screener="crypto",
-                        exchange=exchange,
-                        interval=Interval.INTERVAL_5_MINUTES
-                    )
-                    analysis = handler.get_analysis()
-                    if analysis is not None and hasattr(analysis, 'summary'):
-                        summary = analysis.summary
-                        if summary:
-                            return summary
-                    break  # Salir del bucle si no hay errores y se obtiene el análisis
-
-                except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-                    print(f"Error de conexión al analizar gráfico 5m para {symbol} en {exchange}: {e}. Reintentando en 5 segundos...")
-                    sleep(5)  # Esperar 5 segundos antes de reintentar
-                except Exception as e:
-                    print(f"Error al analizar gráfico 5m para {symbol} en {exchange}: {e}")
-                    error_msg = f"Error al analizar gráfico 5m para {symbol} en {exchange}: {e}\n"
-                    pygame.mixer.music.load('error.mp3')
-                    pygame.mixer.music.play()
-                    self.guardar_error(error_msg)
-                    break  # Salir del bucle para errores no relacionados con la conexión
-
-        if summary is None:
-            # Establecer summary a un valor específico que identificar_tendencia pueda manejar
-            summary = {'RECOMMENDATION': 'LATERAL'}
-            
-        return summary
+        if symbol in {"MDXBTC", "QUICKBTC", "BETABTC"}:
+            return pd.DataFrame()
+        return self._obtener_candles(symbol, "5m", lookback_candles=200)
 
     def datos_iniciales(self):
         porcentaje_requerido = 45  # Puedes ajustar este valor al porcentaje deseado
