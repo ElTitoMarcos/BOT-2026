@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from socket import gaierror
 from tradingview_ta import TA_Handler, Interval, Exchange
 from .strategy import Strategy
+from .config import get_binance_credentials, load_environment, save_binance_credentials
 
 class MoneyBotApp(tk.Tk):
     def __init__(self):
@@ -60,7 +61,7 @@ class MoneyBotApp(tk.Tk):
         self.api_key = None
         self.api_secret = None
 
-        # Load API credentials if available
+        load_environment()
         self.load_api_credentials()
 
         self.create_widgets()
@@ -134,21 +135,21 @@ class MoneyBotApp(tk.Tk):
             self.entry_api_secret.insert(tk.END, self.api_secret)
 
         tk.Button(frame_configuracion_api, text="Configurar API", command=self.configurar_api).grid(row=2, columnspan=2)
+        tk.Button(frame_configuracion_api, text="Guardar", command=self.guardar_api_en_env).grid(row=3, columnspan=2)
 
     def load_api_credentials(self):
-        if os.path.exists("api_credentials.txt"):
-            with open("api_credentials.txt", "r") as file:
-                lines = file.readlines()
-                if len(lines) >= 2:
-                    self.api_key = lines[0].strip()
-                    self.api_secret = lines[1].strip()
+        self.api_key, self.api_secret = get_binance_credentials()
 
-    def save_api_credentials(self):
-        with open("api_credentials.txt", "w") as file:
-            if self.api_key:
-                file.write(self.api_key + "\n")
-            if self.api_secret:
-                file.write(self.api_secret + "\n")
+    def guardar_api_en_env(self):
+        api_key = self.entry_api_key.get().strip()
+        api_secret = self.entry_api_secret.get().strip()
+        if api_key and api_secret:
+            save_binance_credentials(api_key, api_secret)
+            self.api_key = api_key
+            self.api_secret = api_secret
+            print("Credenciales guardadas en .env")
+        else:
+            print("Por favor, ingrese tanto la clave API como el secreto API antes de guardar.")
 
     def create_find_optimal_coins_button(self):
         self.find_optimal_coins_button = tk.Button(self, text="Operar", command=self.revision_ordenes_y_obtener_moneda)
@@ -1781,7 +1782,6 @@ class MoneyBotApp(tk.Tk):
                 if 'makerCommission' in account_info:
                     self.find_optimal_coins_button.config(state=tk.NORMAL)
                     print("API configurada correctamente")
-                    self.save_api_credentials()  # Guardar las credenciales
                 else:
                     print("Error: La API Key o el API Secret no son válidos.")
                     pygame.mixer.music.load('error.mp3')
