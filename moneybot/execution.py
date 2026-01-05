@@ -1,16 +1,32 @@
 import json
+import os
 import uuid
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .models import Order, Trade
+
+try:
+    from binance.exceptions import BinanceAPIException
+except ImportError:  # pragma: no cover - optional dependency
+    BinanceAPIException = None
+
+
+SPOT_LIVE_REST_URL = "https://api.binance.com"
+SPOT_LIVE_WS_URL = "wss://stream.binance.com:9443/ws"
+SPOT_TESTNET_REST_URL = "https://testnet.binance.vision"
+SPOT_TESTNET_WS_URL = "wss://testnet.binance.vision/ws"
+VALID_ENVIRONMENTS = {"LIVE", "TESTNET"}
 
 
 class LiveExecutor:
     def __init__(self, client=None) -> None:
         self.client = client
+        self.environment = self._load_environment()
+        if self.client is not None:
+            self._configure_client_for_environment(self.client, self.environment)
 
     def place_order(self, order: Order) -> Optional[Order]:
         if self.client is None:
@@ -21,6 +37,93 @@ class LiveExecutor:
             )
             order.order_id = str(response.get("id")) if isinstance(response, dict) else None
         return order
+
+    def healthcheck(self) -> Dict[str, str]:
+        if self.client is None:
+            raise RuntimeError("Healthcheck falló: cliente Binance no configurado.")
+
+        self._check_server_time()
+        account_info = self._check_account()
+        self._check_permissions(account_info)
+
+        return {
+            "server_time": "OK",
+            "account": "OK",
+            "permissions": "OK",
+        }
+
+    def _load_environment(self) -> str:
+        env = os.environ.get("ENV", "LIVE").upper()
+        if env not in VALID_ENVIRONMENTS:
+            raise ValueError(f"ENV inválido: {env}. Usa LIVE o TESTNET.")
+        return env
+
+    def _configure_client_for_environment(self, client: Any, env: str) -> None:
+        rest_url, ws_url = self._urls_for_env(env)
+        if hasattr(client, "API_URL"):
+            client.API_URL = f"{rest_url}/api"
+        if hasattr(client, "WS_API_URL"):
+            client.WS_API_URL = ws_url
+        if hasattr(client, "WS_URL"):
+            client.WS_URL = ws_url
+        if hasattr(client, "STREAM_URL"):
+            client.STREAM_URL = ws_url
+        if hasattr(client, "testnet"):
+            client.testnet = env == "TESTNET"
+
+    def _urls_for_env(self, env: str) -> Tuple[str, str]:
+        if env == "TESTNET":
+            return SPOT_TESTNET_REST_URL, SPOT_TESTNET_WS_URL
+        return SPOT_LIVE_REST_URL, SPOT_LIVE_WS_URL
+
+    def _check_server_time(self) -> None:
+        try:
+            self.client.get_server_time()
+        except Exception as exc:
+            raise RuntimeError(f"Healthcheck falló: server time error. {exc}") from exc
+
+    def _check_account(self) -> Dict[str, Any]:
+        try:
+            return self.client.get_account()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Healthcheck falló: account endpoint error. {self._diagnose_auth_error(exc)}"
+            ) from exc
+
+    def _check_permissions(self, account_info: Dict[str, Any]) -> None:
+        can_trade = account_info.get("canTrade", True)
+        if not can_trade:
+            raise RuntimeError(
+                "Healthcheck falló: permisos insuficientes (canTrade=false). "
+                "Habilita trading en la API key."
+            )
+
+    def _diagnose_auth_error(self, exc: Exception) -> str:
+        message = str(exc)
+        code = getattr(exc, "code", None)
+        if BinanceAPIException is not None and isinstance(exc, BinanceAPIException):
+            message = getattr(exc, "message", message)
+        if code in (-2014, -2015):
+            return (
+                f"{message} (code {code}). "
+                "La API key es inválida o la IP no está autorizada. "
+                "Verifica key/secret y la whitelist de IP."
+            )
+        if code == -2010:
+            return (
+                f"{message} (code {code}). "
+                "Permisos insuficientes para operar en Spot. "
+                "Activa trading en la API key."
+            )
+        if "IP" in message or "whitelist" in message:
+            return (
+                f"{message}. Revisa restricciones de IP en la API key."
+            )
+        if "Invalid API-key" in message or "invalid api key" in message.lower():
+            return (
+                f"{message}. Verifica que la API key/secret sean correctas."
+            )
+        return message
 
 
 class PaperExecutor:
