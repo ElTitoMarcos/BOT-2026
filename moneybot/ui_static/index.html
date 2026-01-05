@@ -204,6 +204,28 @@
         font-size: 0.82rem;
         white-space: pre-wrap;
       }
+      .chart-wrapper {
+        position: relative;
+        height: 260px;
+        background: #0b1120;
+        border: 1px solid #1e293b;
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .chart-wrapper canvas {
+        width: 100%;
+        height: 100%;
+      }
+      .chart-empty {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #94a3b8;
+        font-size: 0.9rem;
+        pointer-events: none;
+      }
     </style>
   </head>
   <body>
@@ -221,6 +243,7 @@
         <button class="tab-button" data-tab="trades">Trades</button>
         <button class="tab-button" data-tab="logs">Logs</button>
         <button class="tab-button" data-tab="data">Data</button>
+        <button class="tab-button" data-tab="backtest">Backtest</button>
       </div>
 
       <section id="status" class="panel active">
@@ -303,6 +326,64 @@
           <div id="data-list"></div>
           <div class="timestamp" id="data-updated"></div>
           <div class="error" id="data-error"></div>
+        </div>
+      </section>
+
+      <section id="backtest" class="panel">
+        <div class="card">
+          <h2>Backtest</h2>
+          <div class="controls">
+            <div class="control-group">
+              <label for="backtest-symbols">Symbols</label>
+              <textarea
+                id="backtest-symbols"
+                placeholder="BTCUSDT, ETHUSDT"
+              ></textarea>
+            </div>
+            <div class="control-group">
+              <label for="backtest-interval">Interval</label>
+              <input id="backtest-interval" type="text" placeholder="1h" />
+            </div>
+            <div class="control-group">
+              <label for="backtest-start-date">Start date</label>
+              <input id="backtest-start-date" type="date" />
+            </div>
+            <div class="control-group">
+              <label for="backtest-end-date">End date</label>
+              <input id="backtest-end-date" type="date" />
+            </div>
+            <div class="control-group">
+              <label for="backtest-fee-rate">Fee rate</label>
+              <input
+                id="backtest-fee-rate"
+                type="number"
+                step="0.0001"
+                placeholder="0.001"
+              />
+            </div>
+            <div class="control-group">
+              <label for="backtest-slippage-bps">Slippage bps</label>
+              <input
+                id="backtest-slippage-bps"
+                type="number"
+                step="0.1"
+                placeholder="0"
+              />
+            </div>
+            <button class="btn primary" id="backtest-run-btn">Run</button>
+            <button class="btn secondary" id="backtest-download-btn" disabled>
+              Download zip
+            </button>
+          </div>
+          <div id="backtest-status" class="muted"></div>
+          <div id="backtest-summary" class="grid"></div>
+          <div class="chart-wrapper">
+            <canvas id="backtest-equity" width="800" height="240"></canvas>
+            <div id="backtest-equity-empty" class="chart-empty"></div>
+          </div>
+          <div id="backtest-trades"></div>
+          <div class="timestamp" id="backtest-updated"></div>
+          <div class="error" id="backtest-error"></div>
         </div>
       </section>
     </main>
