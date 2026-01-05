@@ -176,14 +176,30 @@ def _run_simple_backtest(
     cash_per_symbol = initial_balance / num_symbols
     all_trades: List[Dict[str, Any]] = []
     equity_frames: List[pd.DataFrame] = []
+    per_symbol: List[Dict[str, Any]] = []
+    events_loaded_total = 0
+    entry_signals_total = 0
 
     for symbol, df in data_by_symbol.items():
         if df.empty:
+            per_symbol.append(
+                {
+                    "symbol": symbol,
+                    "events": 0,
+                    "entry_signals": 0,
+                    "trades": 0,
+                    "skip_reason": None,
+                }
+            )
             continue
         df = df.sort_values("timestamp").reset_index(drop=True)
         cash = cash_per_symbol
         position = None
         equity_rows: List[Dict[str, Any]] = []
+        symbol_entry_signals = int((df["close"] > df["open"]).sum())
+        symbol_trades = 0
+        events_loaded_total += len(df)
+        entry_signals_total += symbol_entry_signals
 
         for idx, row in df.iterrows():
             timestamp = row["timestamp"]
@@ -235,6 +251,7 @@ def _run_simple_backtest(
                     "fees_paid": position["entry_fee"] + exit_fee,
                 }
             )
+            symbol_trades += 1
             position = None
             equity_rows.append({"timestamp": timestamp, "equity": cash})
 
@@ -261,9 +278,19 @@ def _run_simple_backtest(
                     "fees_paid": position["entry_fee"] + exit_fee,
                 }
             )
+            symbol_trades += 1
             equity_rows.append({"timestamp": last_row["timestamp"], "equity": cash})
 
         equity_frames.append(pd.DataFrame(equity_rows))
+        per_symbol.append(
+            {
+                "symbol": symbol,
+                "events": len(df),
+                "entry_signals": symbol_entry_signals,
+                "trades": symbol_trades,
+                "skip_reason": None,
+            }
+        )
 
     if equity_frames:
         equity_df = equity_frames[0]
@@ -277,6 +304,14 @@ def _run_simple_backtest(
         equity_df = pd.DataFrame(columns=["timestamp", "equity"])
 
     summary = _calculate_summary(all_trades, equity_df, initial_balance)
+    diagnostics = _build_diagnostics(
+        data_by_symbol=data_by_symbol,
+        per_symbol=per_symbol,
+        events_loaded_total=events_loaded_total,
+        entry_signals_total=entry_signals_total,
+        trades_executed=len(all_trades),
+    )
+    summary["diagnostics"] = diagnostics
     return {
         "summary": summary,
         "equity": equity_df,
@@ -319,6 +354,39 @@ def _calculate_summary(
         "profit_factor": profit_factor,
         "max_drawdown": max_drawdown,
     }
+
+
+def _build_diagnostics(
+    *,
+    data_by_symbol: Dict[str, pd.DataFrame],
+    per_symbol: List[Dict[str, Any]],
+    events_loaded_total: int,
+    entry_signals_total: int,
+    trades_executed: int,
+) -> Dict[str, Any]:
+    if trades_executed == 0:
+        for item in per_symbol:
+            item["skip_reason"] = _infer_skip_reason(item)
+
+    return {
+        "universe_size": len(data_by_symbol),
+        "symbols_tested": sum(1 for item in per_symbol if item["events"] > 0),
+        "data_source": "rest_1s_klines",
+        "events_loaded_total": events_loaded_total,
+        "entry_signals_total": entry_signals_total,
+        "trades_executed": trades_executed,
+        "per_symbol": per_symbol,
+    }
+
+
+def _infer_skip_reason(symbol_diag: Dict[str, Any]) -> str:
+    if symbol_diag["events"] == 0:
+        return "no_data"
+    if symbol_diag["entry_signals"] == 0:
+        return "no_signals"
+    if symbol_diag["trades"] == 0:
+        return "filters_blocked"
+    return "unknown"
 
 
 def _save_report(report_dir: Path, result: Dict[str, Any]) -> None:

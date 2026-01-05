@@ -39,6 +39,7 @@ const backtestFeeRate = document.getElementById("backtest-fee-rate");
 const backtestSlippageBps = document.getElementById("backtest-slippage-bps");
 const backtestStatus = document.getElementById("backtest-status");
 const backtestSummary = document.getElementById("backtest-summary");
+const backtestDiagnostics = document.getElementById("backtest-diagnostics");
 const backtestTrades = document.getElementById("backtest-trades");
 const backtestEquity = document.getElementById("backtest-equity");
 const backtestEquityEmpty = document.getElementById("backtest-equity-empty");
@@ -118,6 +119,31 @@ const renderTradesTable = (target, trades) => {
     const row = document.createElement("tr");
     row.innerHTML = columns
       .map((col) => `<td>${formatValue(trade[col])}</td>`)
+      .join("");
+    tbody.appendChild(row);
+  });
+  table.appendChild(tbody);
+  target.appendChild(table);
+};
+
+const renderDataTable = (target, rows, emptyMessage) => {
+  target.innerHTML = "";
+  if (!rows.length) {
+    target.innerHTML = `<p class="muted">${emptyMessage}</p>`;
+    return;
+  }
+  const columns = Object.keys(rows[0]);
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  thead.innerHTML = `<tr>${columns
+    .map((col) => `<th>${col}</th>`)
+    .join("")}</tr>`;
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  rows.forEach((rowData) => {
+    const row = document.createElement("tr");
+    row.innerHTML = columns
+      .map((col) => `<td>${formatValue(rowData[col])}</td>`)
       .join("");
     tbody.appendChild(row);
   });
@@ -231,7 +257,29 @@ const renderBacktestSummary = (summary) => {
     backtestSummary.innerHTML = '<p class="muted">Sin resumen disponible.</p>';
     return;
   }
-  renderKeyValue(backtestSummary, summary);
+  const { diagnostics, ...summaryFields } = summary;
+  renderKeyValue(backtestSummary, summaryFields);
+};
+
+const renderBacktestDiagnostics = (diagnostics) => {
+  if (!backtestDiagnostics) return;
+  backtestDiagnostics.innerHTML = "";
+  if (!diagnostics || Object.keys(diagnostics).length === 0) {
+    backtestDiagnostics.innerHTML = '<p class="muted">Sin diagnostics disponibles.</p>';
+    return;
+  }
+  const { per_symbol: perSymbol = [], ...summaryFields } = diagnostics;
+  const summaryGrid = document.createElement("div");
+  summaryGrid.className = "grid";
+  renderKeyValue(summaryGrid, summaryFields);
+  backtestDiagnostics.appendChild(summaryGrid);
+  const perSymbolTitle = document.createElement("div");
+  perSymbolTitle.className = "section-title";
+  perSymbolTitle.textContent = "Per symbol";
+  backtestDiagnostics.appendChild(perSymbolTitle);
+  const perSymbolContainer = document.createElement("div");
+  renderDataTable(perSymbolContainer, perSymbol, "Sin diagnostics por símbolo.");
+  backtestDiagnostics.appendChild(perSymbolContainer);
 };
 
 const drawEquityCurve = (series) => {
@@ -301,6 +349,7 @@ const stopBacktestPolling = () => {
 const fetchBacktestResult = async (jobId) => {
   const result = await fetchJson(`/backtest/result/${jobId}`);
   renderBacktestSummary(result.summary || {});
+  renderBacktestDiagnostics(result.summary?.diagnostics || {});
   renderTradesTable(backtestTrades, result.trades || []);
   drawEquityCurve(result.equity_series || []);
 };
@@ -424,6 +473,7 @@ backtestRunButton.addEventListener("click", async () => {
     backtestRunButton.disabled = true;
     backtestDownloadButton.disabled = true;
     backtestSummary.innerHTML = "";
+    backtestDiagnostics.innerHTML = "";
     backtestTrades.innerHTML = "";
     backtestEquityEmpty.textContent = "Ejecutando backtest...";
     const response = await fetchJson("/backtest/run", {

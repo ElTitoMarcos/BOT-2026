@@ -226,6 +226,11 @@
         font-size: 0.9rem;
         pointer-events: none;
       }
+      .section-title {
+        margin: 16px 0 8px;
+        font-size: 1rem;
+        color: #cbd5f5;
+      }
     </style>
   </head>
   <body>
@@ -374,6 +379,8 @@
           </div>
           <div id="backtest-status" class="muted"></div>
           <div id="backtest-summary" class="grid"></div>
+          <h3 class="section-title">Diagnostics</h3>
+          <div id="backtest-diagnostics"></div>
           <div class="chart-wrapper">
             <canvas id="backtest-equity" width="800" height="240"></canvas>
             <div id="backtest-equity-empty" class="chart-empty"></div>
