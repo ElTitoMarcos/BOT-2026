@@ -20,7 +20,10 @@ def main() -> None:
             print(f"MoneyBot UI disponible en {url}")
     else:
         print(f"MoneyBot UI disponible en {url}")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    config = uvicorn.Config(app, host="127.0.0.1", port=8000)
+    server = uvicorn.Server(config)
+    app.state.server = server
+    server.run()
 
 
 if __name__ == "__main__":

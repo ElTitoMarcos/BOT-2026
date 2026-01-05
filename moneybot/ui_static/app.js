@@ -548,3 +548,20 @@ backtestDownloadButton.addEventListener("click", () => {
 refreshEnv();
 refreshAll();
 setInterval(refreshAll, 5000);
+
+const sendHeartbeat = () => {
+  fetch("/ui/heartbeat", { method: "POST", keepalive: true }).catch(() => {});
+};
+
+const sendFinalHeartbeat = () => {
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon("/ui/heartbeat");
+    return;
+  }
+  sendHeartbeat();
+};
+
+sendHeartbeat();
+setInterval(sendHeartbeat, 3000);
+window.addEventListener("beforeunload", sendFinalHeartbeat);
+window.addEventListener("pagehide", sendFinalHeartbeat);
