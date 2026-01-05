@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List
 
 import pandas as pd
 
-from .risk import RiskManager
+from ..risk import RiskManager
 
 @dataclass
 class TradeRecord:
