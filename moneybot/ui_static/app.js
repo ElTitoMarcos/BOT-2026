@@ -11,11 +11,13 @@ const metricsError = document.getElementById("metrics-error");
 const tradesError = document.getElementById("trades-error");
 const logsError = document.getElementById("logs-error");
 const dataError = document.getElementById("data-error");
+const backtestError = document.getElementById("backtest-error");
 const statusUpdated = document.getElementById("status-updated");
 const metricsUpdated = document.getElementById("metrics-updated");
 const tradesUpdated = document.getElementById("trades-updated");
 const logsUpdated = document.getElementById("logs-updated");
 const dataUpdated = document.getElementById("data-updated");
+const backtestUpdated = document.getElementById("backtest-updated");
 const envValue = document.getElementById("env-value");
 
 const startButton = document.getElementById("start-btn");
@@ -28,9 +30,24 @@ const dataSymbols = document.getElementById("data-symbols");
 const dataInterval = document.getElementById("data-interval");
 const dataStartDate = document.getElementById("data-start-date");
 const dataEndDate = document.getElementById("data-end-date");
+const backtestRunButton = document.getElementById("backtest-run-btn");
+const backtestDownloadButton = document.getElementById("backtest-download-btn");
+const backtestSymbols = document.getElementById("backtest-symbols");
+const backtestInterval = document.getElementById("backtest-interval");
+const backtestStartDate = document.getElementById("backtest-start-date");
+const backtestEndDate = document.getElementById("backtest-end-date");
+const backtestFeeRate = document.getElementById("backtest-fee-rate");
+const backtestSlippageBps = document.getElementById("backtest-slippage-bps");
+const backtestStatus = document.getElementById("backtest-status");
+const backtestSummary = document.getElementById("backtest-summary");
+const backtestTrades = document.getElementById("backtest-trades");
+const backtestEquity = document.getElementById("backtest-equity");
+const backtestEquityEmpty = document.getElementById("backtest-equity-empty");
 
 let toastTimer;
 let currentStatus = null;
+let backtestPoller = null;
+let activeBacktestJobId = null;
 
 tabButtons.forEach((button) => {
   button.addEventListener("click", () => {
@@ -84,10 +101,10 @@ const renderMetrics = (data) => {
   });
 };
 
-const renderTrades = (trades) => {
-  tradesContainer.innerHTML = "";
+const renderTradesTable = (target, trades) => {
+  target.innerHTML = "";
   if (!trades.length) {
-    tradesContainer.innerHTML = '<p class="muted">Sin trades registrados.</p>';
+    target.innerHTML = '<p class="muted">Sin trades registrados.</p>';
     return;
   }
   const columns = Object.keys(trades[0]);
@@ -106,7 +123,11 @@ const renderTrades = (trades) => {
     tbody.appendChild(row);
   });
   table.appendChild(tbody);
-  tradesContainer.appendChild(table);
+  target.appendChild(table);
+};
+
+const renderTrades = (trades) => {
+  renderTradesTable(tradesContainer, trades);
 };
 
 const fetchJson = async (url, options = {}) => {
@@ -209,6 +230,114 @@ const refreshDataList = async () => {
   }
 };
 
+const renderBacktestSummary = (summary) => {
+  if (!summary || Object.keys(summary).length === 0) {
+    backtestSummary.innerHTML = '<p class="muted">Sin resumen disponible.</p>';
+    return;
+  }
+  renderKeyValue(backtestSummary, summary);
+};
+
+const drawEquityCurve = (series) => {
+  if (!backtestEquity) return;
+  const ctx = backtestEquity.getContext("2d");
+  const width = backtestEquity.clientWidth || backtestEquity.width;
+  const height = backtestEquity.clientHeight || backtestEquity.height;
+  backtestEquity.width = width;
+  backtestEquity.height = height;
+  ctx.clearRect(0, 0, width, height);
+  if (!series || series.length === 0) {
+    backtestEquityEmpty.textContent = "Sin datos de equity.";
+    return;
+  }
+  backtestEquityEmpty.textContent = "";
+  const values = series.map((point) => Number(point.equity || 0));
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const padding = 24;
+  ctx.strokeStyle = "#1e293b";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(padding, padding);
+  ctx.lineTo(padding, height - padding);
+  ctx.lineTo(width - padding, height - padding);
+  ctx.stroke();
+  ctx.strokeStyle = "#38bdf8";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  series.forEach((point, index) => {
+    const x =
+      padding +
+      (index / Math.max(series.length - 1, 1)) * (width - padding * 2);
+    const y =
+      height - padding - ((Number(point.equity || 0) - min) / range) * (height - padding * 2);
+    if (index === 0) {
+      ctx.moveTo(x, y);
+    } else {
+      ctx.lineTo(x, y);
+    }
+  });
+  ctx.stroke();
+};
+
+const updateBacktestStatus = (status) => {
+  if (!status) {
+    backtestStatus.textContent = "";
+    return;
+  }
+  const state = status.state || "unknown";
+  const normalizedState =
+    state === "completed" ? "FINISHED" : state === "failed" ? "FAILED" : state.toUpperCase();
+  backtestStatus.textContent = `${normalizedState} · ${status.progress ?? 0}% · ${
+    status.message || ""
+  }`;
+  backtestUpdated.textContent = `Actualizado: ${new Date().toLocaleTimeString()}`;
+};
+
+const stopBacktestPolling = () => {
+  if (backtestPoller) {
+    clearInterval(backtestPoller);
+    backtestPoller = null;
+  }
+};
+
+const fetchBacktestResult = async (jobId) => {
+  const result = await fetchJson(`/backtest/result/${jobId}`);
+  renderBacktestSummary(result.summary || {});
+  renderTradesTable(backtestTrades, result.trades || []);
+  drawEquityCurve(result.equity_series || []);
+};
+
+const pollBacktestStatus = async (jobId) => {
+  backtestError.textContent = "";
+  try {
+    const status = await fetchJson(`/backtest/status/${jobId}`);
+    updateBacktestStatus(status);
+    if (status.state === "completed") {
+      stopBacktestPolling();
+      await fetchBacktestResult(jobId);
+      backtestDownloadButton.disabled = false;
+      showToast("Backtest finalizado");
+    } else if (status.state === "failed") {
+      stopBacktestPolling();
+      backtestError.textContent = status.message || "Backtest fallido.";
+      backtestDownloadButton.disabled = true;
+    }
+  } catch (error) {
+    backtestError.textContent = error.message;
+    stopBacktestPolling();
+  }
+};
+
+const startBacktestPolling = (jobId) => {
+  stopBacktestPolling();
+  backtestPoller = setInterval(() => {
+    pollBacktestStatus(jobId);
+  }, 1000);
+  pollBacktestStatus(jobId);
+};
+
 const refreshEnv = async () => {
   try {
     const data = await fetchJson("/config/status");
@@ -288,6 +417,51 @@ dataDownloadButton.addEventListener("click", async () => {
   } catch (error) {
     showToast(error.message, true);
   }
+});
+
+backtestRunButton.addEventListener("click", async () => {
+  backtestError.textContent = "";
+  const symbols = backtestSymbols.value
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const payload = {
+    symbols,
+    interval: backtestInterval.value || "1h",
+    start_date: backtestStartDate.value || null,
+    end_date: backtestEndDate.value || null,
+    fee_rate: backtestFeeRate.value ? Number(backtestFeeRate.value) : 0.001,
+    slippage_bps: backtestSlippageBps.value ? Number(backtestSlippageBps.value) : 0,
+  };
+  try {
+    backtestRunButton.disabled = true;
+    backtestDownloadButton.disabled = true;
+    backtestSummary.innerHTML = "";
+    backtestTrades.innerHTML = "";
+    backtestEquityEmpty.textContent = "Ejecutando backtest...";
+    const response = await fetchJson("/backtest/run", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    activeBacktestJobId = response.job_id;
+    showToast("Backtest en ejecución");
+    startBacktestPolling(activeBacktestJobId);
+  } catch (error) {
+    backtestError.textContent = error.message;
+  } finally {
+    backtestRunButton.disabled = false;
+  }
+});
+
+backtestDownloadButton.addEventListener("click", () => {
+  if (!activeBacktestJobId) {
+    showToast("No hay job de backtest disponible", true);
+    return;
+  }
+  window.location.href = `/backtest/download/${activeBacktestJobId}`;
 });
 
 refreshEnv();
