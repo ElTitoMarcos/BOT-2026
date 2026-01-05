@@ -9,6 +9,13 @@ if not exist "%PYTHON_EXE%" (
   pause >nul
   exit /b 1
 )
+
+rem Ensure dependencies are installed (including email-validator required by FastAPI/Pydantic).
+%PYTHON_EXE% -m pip show email-validator >nul 2>&1
+if errorlevel 1 (
+  echo Installing required dependencies...
+  %PYTHON_EXE% -m pip install -r requirements.txt
+)
 start "" /b "%PYTHON_EXE%" BOT.py
 
 timeout /t 2 /nobreak >nul
