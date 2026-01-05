@@ -184,7 +184,7 @@ class MoneyBotApp(tk.Tk):
         options.add_argument("--disable-web-security")
         options.add_argument("--allow-running-insecure-content")
 
-        self.driver = webdriver.Edge(service=EdgeService(EdgeChromiumDriverManager().install()), options=options)
+        self.driver = webdriver.Edge(options=options)
         return self.driver
 
     def abrir_whatsapp_web(self, driver):
