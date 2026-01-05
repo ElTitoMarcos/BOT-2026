@@ -22,6 +22,7 @@ import ccxt
 import pygame
 import pandas as pd
 import numpy as np
+import subprocess
 from time import sleep
 from requests.exceptions import RequestException
 from datetime import datetime, timedelta
@@ -84,6 +85,8 @@ class MoneyBotApp(tk.Tk):
         self.disable_buttons_and_entries = False
         self.driver = {}
         self.symbols_to_skip = set()
+        self.tradingview_cooldown_until = None
+        self.tradingview_rate_limit_seconds = 120
 
         self.api_key = None
         self.api_secret = None
@@ -176,6 +179,24 @@ class MoneyBotApp(tk.Tk):
     def iniciar_automatizacion_whatsapp(self):
         threading.Thread(target=self.automatizacion_whatsapp).start()
 
+    def cerrar_edge_si_abierto(self):
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq msedge.exe"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if "msedge.exe" in result.stdout.lower():
+                subprocess.run(
+                    ["taskkill", "/im", "msedge.exe", "/f"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+        except Exception as e:
+            print(f"Error al intentar cerrar Edge: {e}")
+
     def iniciar_driver(self):
         options = webdriver.EdgeOptions()
         options.add_argument("user-data-dir=C:/Users/marco/AppData/Local/Microsoft/Edge/User Data")
@@ -210,7 +231,7 @@ class MoneyBotApp(tk.Tk):
             return None
 
     def automatizacion_whatsapp(self):
-        os.system("taskkill /im msedge.exe /f")
+        self.cerrar_edge_si_abierto()
 
         nombre_del_chat = "Bot-Trading"
 
@@ -1641,6 +1662,9 @@ class MoneyBotApp(tk.Tk):
         if symbol in self.symbols_to_skip:
             return {'RECOMMENDATION': 'LATERAL'}
 
+        if self.tradingview_cooldown_until and datetime.now() < self.tradingview_cooldown_until:
+            return {'RECOMMENDATION': 'LATERAL'}
+
         for exchange in exchanges:
             while True:
                 try:
@@ -1666,6 +1690,12 @@ class MoneyBotApp(tk.Tk):
                     sleep(5)  # Esperar 5 segundos antes de reintentar
                 except Exception as e:
                     error_msg = f"Error al analizar gráfico 1D para {symbol} en {exchange}: {e}"
+                    if "HTTP status code: 429" in str(e):
+                        cooldown_until = datetime.now() + timedelta(seconds=self.tradingview_rate_limit_seconds)
+                        self.tradingview_cooldown_until = cooldown_until
+                        print(f"{error_msg}. Se activó cooldown hasta {cooldown_until}.")
+                        self.guardar_error(f"{error_msg}. Se activó cooldown.")
+                        return {'RECOMMENDATION': 'LATERAL'}
                     if "Exchange or symbol not found" in str(e):
                         print(error_msg)
                         self.symbols_to_skip.add(symbol)
@@ -1688,6 +1718,9 @@ class MoneyBotApp(tk.Tk):
         summary = None
 
         if symbol in self.symbols_to_skip:
+            return {'RECOMMENDATION': 'LATERAL'}
+
+        if self.tradingview_cooldown_until and datetime.now() < self.tradingview_cooldown_until:
             return {'RECOMMENDATION': 'LATERAL'}
 
         for exchange in exchanges:
@@ -1715,6 +1748,12 @@ class MoneyBotApp(tk.Tk):
                     sleep(5)  # Esperar 5 segundos antes de reintentar
                 except Exception as e:
                     error_msg = f"Error al analizar gráfico 4H para {symbol} en {exchange}: {e}"
+                    if "HTTP status code: 429" in str(e):
+                        cooldown_until = datetime.now() + timedelta(seconds=self.tradingview_rate_limit_seconds)
+                        self.tradingview_cooldown_until = cooldown_until
+                        print(f"{error_msg}. Se activó cooldown hasta {cooldown_until}.")
+                        self.guardar_error(f"{error_msg}. Se activó cooldown.")
+                        return {'RECOMMENDATION': 'LATERAL'}
                     if "Exchange or symbol not found" in str(e):
                         print(error_msg)
                         self.symbols_to_skip.add(symbol)
@@ -1737,6 +1776,9 @@ class MoneyBotApp(tk.Tk):
         summary = None
 
         if symbol in self.symbols_to_skip:
+            return {'RECOMMENDATION': 'LATERAL'}
+
+        if self.tradingview_cooldown_until and datetime.now() < self.tradingview_cooldown_until:
             return {'RECOMMENDATION': 'LATERAL'}
 
         for exchange in exchanges:
@@ -1764,6 +1806,12 @@ class MoneyBotApp(tk.Tk):
                     sleep(5)  # Esperar 5 segundos antes de reintentar
                 except Exception as e:
                     error_msg = f"Error al analizar gráfico 5m para {symbol} en {exchange}: {e}"
+                    if "HTTP status code: 429" in str(e):
+                        cooldown_until = datetime.now() + timedelta(seconds=self.tradingview_rate_limit_seconds)
+                        self.tradingview_cooldown_until = cooldown_until
+                        print(f"{error_msg}. Se activó cooldown hasta {cooldown_until}.")
+                        self.guardar_error(f"{error_msg}. Se activó cooldown.")
+                        return {'RECOMMENDATION': 'LATERAL'}
                     if "Exchange or symbol not found" in str(e):
                         print(error_msg)
                         self.symbols_to_skip.add(symbol)
