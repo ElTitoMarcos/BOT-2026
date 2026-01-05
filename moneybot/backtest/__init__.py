@@ -36,6 +36,7 @@ class BacktestResult:
     trades: List[TradeRecord]
     report_json_path: Path
     trades_csv_path: Path
+    diagnostics: Dict[str, Any]
 
 
 class Backtester:
@@ -62,19 +63,64 @@ class Backtester:
         self.buffer_bps = float(buffer_bps)
         self.risk_manager = risk_manager
 
-    def run(self, strategy: Any, data_by_symbol: Dict[str, pd.DataFrame]) -> BacktestResult:
+    def run(
+        self,
+        strategy: Any,
+        data_by_symbol: Dict[str, pd.DataFrame],
+        *,
+        data_source: str = "rest_1s_klines",
+    ) -> BacktestResult:
         num_symbols = max(len(data_by_symbol), 1)
         cash_per_symbol = self.initial_balance / num_symbols
         trades: List[TradeRecord] = []
+        per_symbol: List[Dict[str, Any]] = []
+        events_loaded_total = 0
+        entry_signals_total = 0
 
         for symbol, df in data_by_symbol.items():
             if df.empty:
+                per_symbol.append(
+                    {
+                        "symbol": symbol,
+                        "events": 0,
+                        "entry_signals": 0,
+                        "trades": 0,
+                        "skip_reason": None,
+                    }
+                )
                 continue
             df = df.reset_index(drop=True)
-            symbol_trades = self._simulate_symbol(strategy, symbol, df, cash_per_symbol)
+            signals = self._normalize_signals(strategy.entry_signal(df), df)
+            entry_signals = int(signals.sum())
+            symbol_trades = self._simulate_symbol(
+                strategy,
+                symbol,
+                df,
+                cash_per_symbol,
+                signals=signals,
+            )
             trades.extend(symbol_trades)
+            events_loaded_total += len(df)
+            entry_signals_total += entry_signals
+            per_symbol.append(
+                {
+                    "symbol": symbol,
+                    "events": len(df),
+                    "entry_signals": entry_signals,
+                    "trades": len(symbol_trades),
+                    "skip_reason": None,
+                }
+            )
 
         metrics = self._calculate_metrics(trades)
+        diagnostics = self._build_diagnostics(
+            data_source=data_source,
+            data_by_symbol=data_by_symbol,
+            per_symbol=per_symbol,
+            events_loaded_total=events_loaded_total,
+            entry_signals_total=entry_signals_total,
+            trades_executed=len(trades),
+        )
         report_dir = Path("./reports")
         report_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -85,6 +131,7 @@ class Backtester:
             "initial_balance": self.initial_balance,
             "final_balance": self.initial_balance * (1 + metrics["total_return"]),
             "metrics": metrics,
+            "diagnostics": diagnostics,
             "trades": [asdict(trade) for trade in trades],
         }
         report_json_path.write_text(
@@ -122,6 +169,7 @@ class Backtester:
             trades=trades,
             report_json_path=report_json_path,
             trades_csv_path=trades_csv_path,
+            diagnostics=diagnostics,
         )
 
     def _simulate_symbol(
@@ -130,8 +178,11 @@ class Backtester:
         symbol: str,
         df: pd.DataFrame,
         starting_cash: float,
+        *,
+        signals: pd.Series | None = None,
     ) -> List[TradeRecord]:
-        signals = self._normalize_signals(strategy.entry_signal(df), df)
+        if signals is None:
+            signals = self._normalize_signals(strategy.entry_signal(df), df)
         take_profit_pct = getattr(strategy, "take_profit_pct", None)
         stop_loss_pct = getattr(strategy, "stop_loss_pct", None)
         trailing_stop_pct = getattr(strategy, "trailing_stop_pct", None)
@@ -318,6 +369,40 @@ class Backtester:
             return datetime.fromisoformat(str(value))
         except ValueError:
             return datetime.utcnow()
+
+    def _build_diagnostics(
+        self,
+        *,
+        data_source: str,
+        data_by_symbol: Dict[str, pd.DataFrame],
+        per_symbol: List[Dict[str, Any]],
+        events_loaded_total: int,
+        entry_signals_total: int,
+        trades_executed: int,
+    ) -> Dict[str, Any]:
+        if trades_executed == 0:
+            for item in per_symbol:
+                item["skip_reason"] = self._infer_skip_reason(item)
+
+        return {
+            "universe_size": len(data_by_symbol),
+            "symbols_tested": sum(1 for item in per_symbol if item["events"] > 0),
+            "data_source": data_source,
+            "events_loaded_total": events_loaded_total,
+            "entry_signals_total": entry_signals_total,
+            "trades_executed": trades_executed,
+            "per_symbol": per_symbol,
+        }
+
+    @staticmethod
+    def _infer_skip_reason(symbol_diag: Dict[str, Any]) -> str:
+        if symbol_diag["events"] == 0:
+            return "no_data"
+        if symbol_diag["entry_signals"] == 0:
+            return "no_signals"
+        if symbol_diag["trades"] == 0:
+            return "filters_blocked"
+        return "unknown"
 
     def _calculate_metrics(self, trades: List[TradeRecord]) -> Dict[str, float]:
         num_trades = len(trades)
