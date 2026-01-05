@@ -3,3 +3,5 @@ pandas_ta
 fastapi
 uvicorn
 zstandard
+email-validator>=2
+websocket-client
