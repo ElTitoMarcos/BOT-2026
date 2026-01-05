@@ -36,10 +36,9 @@ class ModePayload(BaseModel):
 
 
 class BacktestRunPayload(BaseModel):
-    symbols: list[str]
-    interval: str
-    start_date: str
-    end_date: str
+    symbols: Optional[list[str]] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
     initial_balance: float = 1000.0
     fee_rate: float = 0.001
     slippage_bps: float = 0.0
@@ -135,7 +134,7 @@ def config_save(payload: ConfigPayload) -> dict:
 
 @app.post("/backtest/run")
 def backtest_run(payload: BacktestRunPayload) -> dict:
-    job_id = backtest_jobs.run_job(payload.dict())
+    job_id = backtest_jobs.run_job(payload.dict(exclude_none=True))
     return {"job_id": job_id}
 
 
