@@ -3,16 +3,20 @@ from typing import Callable, Iterable, List, Optional
 
 import pandas as pd
 import pandas_ta as ta
+import requests
 
+from .rate_limiter import BinanceRestClient
 
 class Strategy:
     def __init__(
         self,
         error_handler: Optional[Callable[[str], None]] = None,
         error_sound: Optional[Callable[[], None]] = None,
+        rest_client: Optional[BinanceRestClient] = None,
     ) -> None:
         self.error_handler = error_handler
         self.error_sound = error_sound
+        self.rest_client = rest_client or BinanceRestClient()
 
     def _handle_error(self, message: str) -> None:
         if self.error_sound:
@@ -128,10 +132,7 @@ class Strategy:
             return False
 
     def calcular_datos(self, symbol):
-        import requests
-
         # Endpoint de la API de Binance para obtener las transacciones agregadas recientes
-        endpoint = "https://api.binance.com/api/v3/aggTrades"
         current_time = int(time.time() * 1000)  # Tiempo actual en milisegundos
         start_time = current_time - 24 * 60 * 60 * 1000  # Timestamp de las últimas 24 horas
 
@@ -151,18 +152,11 @@ class Strategy:
 
             # Obtener transacciones de las últimas 24 horas
             while True:
-                response = requests.get(endpoint, params=params)
-
-                if response.status_code != 200:
-                    if response.status_code == 400:
-                        error_message = response.json()
-                        if error_message.get('code') == -1101:
-                            return 0.0, 0.0, 0.0
-                    print(f"Mensaje de error: {response.json()}")
-                    self._handle_error(f"Mensaje de error: {response.json()}\n")
-                    return 0.0, 0.0, 0.0
-
-                data = response.json()
+                data = self.rest_client.get_json(
+                    "/api/v3/aggTrades",
+                    params=params,
+                    weight=2,
+                )
 
                 if not data:
                     break
@@ -202,6 +196,17 @@ class Strategy:
             avg_sell_price = round(avg_sell_price, 8)
 
             return vwap, avg_buy_price, avg_sell_price
+        except requests.HTTPError as e:
+            response = e.response
+            if response is not None:
+                try:
+                    error_message = response.json()
+                except ValueError:
+                    error_message = {}
+                if error_message.get("code") == -1101:
+                    return 0.0, 0.0, 0.0
+            print(f"Error en la llamada a la API: {e}")
+            return 0.0, 0.0, 0.0
         except requests.RequestException as e:
             print(f"Error en la llamada a la API: {e}")
             return 0.0, 0.0, 0.0

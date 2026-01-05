@@ -9,6 +9,7 @@ from typing import Iterable, Optional, Union
 import pandas as pd
 import requests
 
+from .rate_limiter import BinanceRestClient, BinanceRateLimiter
 
 OHLCV_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 
@@ -60,6 +61,8 @@ class BinanceKlinesProvider(IDataProvider):
     base_url: str = "https://api.binance.com"
     data_dir: Path = Path("./data")
     session: Optional[requests.Session] = None
+    rate_limiter: Optional[BinanceRateLimiter] = None
+    rest_client: Optional[BinanceRestClient] = None
 
     def get_ohlcv(
         self,
@@ -136,6 +139,11 @@ class BinanceKlinesProvider(IDataProvider):
         interval_ms = interval_to_ms(interval)
         current = start_ms
         session = self.session or requests.Session()
+        rest_client = self.rest_client or BinanceRestClient(
+            base_url=self.base_url,
+            rate_limiter=self.rate_limiter,
+            session=session,
+        )
 
         while current <= end_ms:
             params = {
@@ -145,11 +153,11 @@ class BinanceKlinesProvider(IDataProvider):
                 "endTime": end_ms,
                 "limit": limit,
             }
-            response = session.get(
-                f"{self.base_url}/api/v3/klines", params=params, timeout=10
+            rows = rest_client.get_json(
+                "/api/v3/klines",
+                params=params,
+                weight=2,
             )
-            response.raise_for_status()
-            rows = response.json()
             if not rows:
                 break
             all_rows.extend(rows)
