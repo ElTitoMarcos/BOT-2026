@@ -2,7 +2,14 @@
 cd /d "%~dp0"
 
 echo Starting MoneyBot...
-start "" cmd /c ".\.venv\Scripts\python.exe BOT.py"
+set "PYTHON_EXE=.\.venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" (
+  echo Error: Virtual environment not found at "%PYTHON_EXE%".
+  echo Run: python -m venv .venv ^&^& .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+  pause >nul
+  exit /b 1
+)
+start "" /b "%PYTHON_EXE%" BOT.py
 
 timeout /t 2 /nobreak >nul
 start "" http://127.0.0.1:8000/ui
