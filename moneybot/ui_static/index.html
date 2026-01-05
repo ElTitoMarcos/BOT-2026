@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>MoneyBot UI</title>
+    <style>
+      body {
+        font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+        margin: 0;
+        background: #0b1120;
+        color: #e2e8f0;
+      }
+      header {
+        padding: 24px 32px;
+        background: #111827;
+        border-bottom: 1px solid #1f2937;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 1.4rem;
+      }
+      header p {
+        margin: 6px 0 0;
+        color: #94a3b8;
+        font-size: 0.9rem;
+      }
+      main {
+        padding: 24px 32px 40px;
+      }
+      .tabs {
+        display: flex;
+        gap: 12px;
+        border-bottom: 1px solid #1f2937;
+        margin-bottom: 20px;
+      }
+      .tab-button {
+        padding: 10px 16px;
+        border: none;
+        background: transparent;
+        color: #94a3b8;
+        font-weight: 600;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+      }
+      .tab-button.active {
+        color: #38bdf8;
+        border-bottom-color: #38bdf8;
+      }
+      .panel {
+        display: none;
+      }
+      .panel.active {
+        display: block;
+      }
+      .card {
+        background: #0f172a;
+        border: 1px solid #1e293b;
+        border-radius: 12px;
+        padding: 18px;
+        margin-bottom: 16px;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 12px 0 16px;
+        align-items: center;
+      }
+      .control-group {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        background: #111827;
+        border-radius: 10px;
+        padding: 10px 12px;
+      }
+      .control-group label {
+        font-size: 0.85rem;
+        color: #94a3b8;
+      }
+      .btn {
+        border: none;
+        border-radius: 8px;
+        padding: 8px 14px;
+        font-weight: 600;
+        cursor: pointer;
+        background: #1f2937;
+        color: #e2e8f0;
+      }
+      .btn.primary {
+        background: #2563eb;
+      }
+      .btn.secondary {
+        background: #475569;
+      }
+      .btn.warn {
+        background: #f97316;
+      }
+      select {
+        background: #0b1120;
+        color: #e2e8f0;
+        border: 1px solid #1e293b;
+        border-radius: 6px;
+        padding: 6px 10px;
+        font-weight: 600;
+      }
+      .toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        background: #1f2937;
+        color: #e2e8f0;
+        padding: 12px 16px;
+        border-radius: 10px;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.35);
+        opacity: 0;
+        transform: translateY(10px);
+        transition: opacity 0.2s ease, transform 0.2s ease;
+        pointer-events: none;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      .toast.error {
+        background: #7f1d1d;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 12px;
+      }
+      .kv {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.95rem;
+        border-bottom: 1px solid #1e293b;
+        padding: 6px 0;
+      }
+      .kv:last-child {
+        border-bottom: none;
+      }
+      .metric {
+        background: #111827;
+        border-radius: 10px;
+        padding: 12px;
+      }
+      .metric span {
+        display: block;
+        color: #94a3b8;
+        font-size: 0.85rem;
+      }
+      .metric strong {
+        font-size: 1.2rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 8px 6px;
+        border-bottom: 1px solid #1e293b;
+      }
+      th {
+        color: #94a3b8;
+        font-weight: 600;
+      }
+      .muted {
+        color: #94a3b8;
+      }
+      .error {
+        color: #f87171;
+        font-size: 0.9rem;
+      }
+      .timestamp {
+        font-size: 0.8rem;
+        color: #64748b;
+      }
+      .log-output {
+        background: #0b1120;
+        border: 1px solid #1e293b;
+        border-radius: 10px;
+        padding: 12px;
+        max-height: 320px;
+        overflow-y: auto;
+        font-family: "Cascadia Mono", "Fira Code", monospace;
+        font-size: 0.82rem;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>MoneyBot UI</h1>
+      <p>
+        Entorno actual: <strong id="env-value">Cargando...</strong> · Auto refresh
+        cada 5s
+      </p>
+    </header>
+    <main>
+      <div class="tabs">
+        <button class="tab-button active" data-tab="status">Status</button>
+        <button class="tab-button" data-tab="metrics">Metrics</button>
+        <button class="tab-button" data-tab="trades">Trades</button>
+        <button class="tab-button" data-tab="logs">Logs</button>
+      </div>
+
+      <section id="status" class="panel active">
+        <div class="card">
+          <h2>Status</h2>
+          <div class="controls">
+            <div class="control-group">
+              <button class="btn primary" id="start-btn">Start</button>
+              <button class="btn secondary" id="stop-btn">Stop</button>
+              <button class="btn warn" id="pause-resume-btn">Pause</button>
+            </div>
+            <div class="control-group">
+              <label for="mode-select">Mode</label>
+              <select id="mode-select">
+                <option value="BACKTEST">BACKTEST</option>
+                <option value="PAPER">PAPER</option>
+                <option value="TESTNET">TESTNET</option>
+                <option value="LIVE">LIVE</option>
+              </select>
+            </div>
+          </div>
+          <div id="status-data"></div>
+          <div class="timestamp" id="status-updated"></div>
+          <div class="error" id="status-error"></div>
+        </div>
+      </section>
+
+      <section id="metrics" class="panel">
+        <div class="card">
+          <h2>Metrics</h2>
+          <div class="grid" id="metrics-data"></div>
+          <div class="timestamp" id="metrics-updated"></div>
+          <div class="error" id="metrics-error"></div>
+        </div>
+      </section>
+
+      <section id="trades" class="panel">
+        <div class="card">
+          <h2>Trades</h2>
+          <div id="trades-data"></div>
+          <div class="timestamp" id="trades-updated"></div>
+          <div class="error" id="trades-error"></div>
+        </div>
+      </section>
+
+      <section id="logs" class="panel">
+        <div class="card">
+          <h2>Logs</h2>
+          <div id="logs-data" class="log-output"></div>
+          <div class="timestamp" id="logs-updated"></div>
+          <div class="error" id="logs-error"></div>
+        </div>
+      </section>
+    </main>
+    <div id="toast" class="toast"></div>
+    <script src="/ui_static/app.js"></script>
+  </body>
+</html>
