@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import time
 from collections import deque
 from pathlib import Path
 from typing import Literal, Optional
@@ -20,8 +23,39 @@ observability = ObservabilityStore()
 backtest_jobs = BacktestJobManager()
 LOG_PATH = Path("logs/moneybot.log")
 UI_DIR = Path(__file__).resolve().parent.parent / "ui_static"
+CLIENT_CHECK_INTERVAL_S = 5
+CLIENT_TIMEOUT_S = 15
 
 load_env()
+
+
+async def _monitor_ui_clients() -> None:
+    while True:
+        await asyncio.sleep(CLIENT_CHECK_INTERVAL_S)
+        last_seen = getattr(app.state, "last_client_seen", None)
+        if last_seen is None:
+            continue
+        if time.time() - last_seen > CLIENT_TIMEOUT_S:
+            runtime.stop()
+            server = getattr(app.state, "server", None)
+            if server is not None:
+                server.should_exit = True
+            break
+
+
+@app.on_event("startup")
+async def startup_tasks() -> None:
+    app.state.last_client_seen = time.time()
+    app.state.monitor_task = asyncio.create_task(_monitor_ui_clients())
+
+
+@app.on_event("shutdown")
+async def shutdown_tasks() -> None:
+    monitor_task = getattr(app.state, "monitor_task", None)
+    if monitor_task is not None:
+        monitor_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await monitor_task
 
 
 class ConfigPayload(BaseModel):
@@ -74,6 +108,12 @@ def control_stop() -> dict:
 def control_set_mode(payload: ModePayload) -> dict:
     runtime.set_mode(payload.mode)
     return runtime.status()
+
+
+@app.post("/ui/heartbeat")
+def ui_heartbeat() -> dict:
+    app.state.last_client_seen = time.time()
+    return {"ok": True}
 
 
 @app.get("/status")
