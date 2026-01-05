@@ -33,7 +33,12 @@ def main() -> None:
     data_by_symbol = {symbol: df}
 
     strategy = TrendStrategy()
-    backtester = Backtester(initial_balance=1000.0, fee_rate=0.001, slippage_bps=5)
+    backtester = Backtester(
+        initial_balance=1000.0,
+        fee_rate=0.001,
+        slippage_bps=5,
+        buffer_bps=10,
+    )
     result = backtester.run(strategy, data_by_symbol)
 
     print("Resumen del backtest")

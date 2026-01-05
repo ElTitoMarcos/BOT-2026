@@ -31,6 +31,8 @@ class MoneyBotApp(tk.Tk):
         self.klines_provider = BinanceKlinesProvider()
         self.client = None
         self.comision_porcentaje = 0.15
+        self.fee_rate = 0.001
+        self.buffer_bps = 10
         self.precio_anterior = 0.0
         self.cantidad_operacion_usdt = None
         self.nombre_archivo_csv_compra = "datos_ordenes_compra.csv"
@@ -721,13 +723,11 @@ class MoneyBotApp(tk.Tk):
                 tick_size = self.client.get_symbol_info(symbol)['filters'][0]['tickSize']
                 tick_size = float(tick_size)
 
-                precio_venta = round(order_price + tick_size, 8)
-
-                # Redondear al valor más cercano
-                precio_venta_rounded = round(precio_venta / tick_size) * tick_size
-                # Ajustar el precio de venta si es igual al precio de compra
-                if precio_venta_rounded == order_price:
-                    precio_venta = round(precio_venta_rounded + tick_size, 8)
+                target_price = order_price * (
+                    1 + 2 * self.fee_rate + self.buffer_bps / 10000
+                )
+                precio_venta = math.ceil(target_price / tick_size) * tick_size
+                precio_venta = round(precio_venta, 8)
 
                 precio_venta_str = "{:.8f}".format(precio_venta)  # Formatear el precio de venta como una cadena
 
