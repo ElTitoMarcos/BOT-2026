@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List
 
 import pandas as pd
 
+from .risk import RiskManager
 
 @dataclass
 class TradeRecord:
@@ -53,11 +54,13 @@ class Backtester:
         fee_rate: float,
         slippage_bps: float,
         buffer_bps: float = 10.0,
+        risk_manager: RiskManager | None = None,
     ) -> None:
         self.initial_balance = float(initial_balance)
         self.fee_rate = float(fee_rate)
         self.slippage_bps = float(slippage_bps)
         self.buffer_bps = float(buffer_bps)
+        self.risk_manager = risk_manager
 
     def run(self, strategy: Any, data_by_symbol: Dict[str, pd.DataFrame]) -> BacktestResult:
         num_symbols = max(len(data_by_symbol), 1)
@@ -131,20 +134,49 @@ class Backtester:
         signals = self._normalize_signals(strategy.entry_signal(df), df)
         take_profit_pct = getattr(strategy, "take_profit_pct", None)
         stop_loss_pct = getattr(strategy, "stop_loss_pct", None)
+        trailing_stop_pct = getattr(strategy, "trailing_stop_pct", None)
         max_holding_candles = getattr(strategy, "max_holding_candles", None)
+
+        if self.risk_manager is not None:
+            if stop_loss_pct is None:
+                stop_loss_pct = self.risk_manager.stop_loss_pct
+            if take_profit_pct is None:
+                take_profit_pct = self.risk_manager.take_profit_pct
+            if trailing_stop_pct is None:
+                trailing_stop_pct = self.risk_manager.trailing_stop_pct
+            if max_holding_candles is None:
+                max_holding_candles = self.risk_manager.max_holding_candles
 
         cash = starting_cash
         position = None
         trades: List[TradeRecord] = []
+        open_positions = 0
 
         for idx, row in df.iterrows():
+            if self.risk_manager is not None:
+                equity = cash
+                if position is not None:
+                    equity += position["quantity"] * float(row["close"])
+                self.risk_manager.update_equity(equity, self._parse_time(row["timestamp"]))
+                self.risk_manager.step_cooldown()
             if position is None:
+                if self.risk_manager is not None:
+                    if not self.risk_manager.can_open_trade(open_positions):
+                        continue
                 if not signals.iloc[idx]:
                     continue
                 base_price = float(row["close"])
                 entry_price = self._apply_slippage(base_price, side="buy")
                 cost_per_unit = entry_price * (1 + self.fee_rate)
                 quantity = cash / cost_per_unit if cost_per_unit > 0 else 0
+                if self.risk_manager is not None and self.risk_manager.risk_per_trade_pct:
+                    risk_amount = cash * self.risk_manager.risk_per_trade_pct
+                    if stop_loss_pct and stop_loss_pct > 0:
+                        quantity = risk_amount / (entry_price * stop_loss_pct)
+                    else:
+                        quantity = risk_amount / entry_price
+                    max_quantity = cash / cost_per_unit if cost_per_unit > 0 else 0
+                    quantity = min(quantity, max_quantity)
                 if quantity <= 0:
                     continue
                 entry_fee = entry_price * quantity * self.fee_rate
@@ -157,13 +189,21 @@ class Backtester:
                     "entry_fee": entry_fee,
                     "trade_cost": trade_cost,
                     "entry_time": self._format_time(row["timestamp"]),
+                    "highest_price": entry_price,
                 }
+                open_positions = 1
                 continue
 
             holding_candles = idx - position["entry_index"]
             exit_reason = None
             exit_base_price = None
-            if stop_loss_pct is not None:
+            if trailing_stop_pct is not None:
+                position["highest_price"] = max(position["highest_price"], float(row["high"]))
+                trailing_stop_price = position["highest_price"] * (1 - trailing_stop_pct)
+                if float(row["low"]) <= trailing_stop_price:
+                    exit_reason = "trailing_stop"
+                    exit_base_price = trailing_stop_price
+            if exit_reason is None and stop_loss_pct is not None:
                 stop_price = position["entry_price"] * (1 - stop_loss_pct)
                 if float(row["low"]) <= stop_price:
                     exit_reason = "stop_loss"
@@ -207,7 +247,10 @@ class Backtester:
                     fees_paid=position["entry_fee"] + exit_fee,
                 )
             )
+            if self.risk_manager is not None:
+                self.risk_manager.register_trade_result(pnl)
             position = None
+            open_positions = 0
 
         if position is not None:
             last_row = df.iloc[-1]
@@ -232,6 +275,8 @@ class Backtester:
                     fees_paid=position["entry_fee"] + exit_fee,
                 )
             )
+            if self.risk_manager is not None:
+                self.risk_manager.register_trade_result(pnl)
 
         return trades
 
@@ -263,6 +308,16 @@ class Backtester:
         if isinstance(value, pd.Timestamp):
             return value.isoformat()
         return str(value)
+
+    def _parse_time(self, value: Any) -> datetime:
+        if isinstance(value, (int, float)):
+            return datetime.utcfromtimestamp(value / 1000)
+        if isinstance(value, pd.Timestamp):
+            return value.to_pydatetime()
+        try:
+            return datetime.fromisoformat(str(value))
+        except ValueError:
+            return datetime.utcnow()
 
     def _calculate_metrics(self, trades: List[TradeRecord]) -> Dict[str, float]:
         num_trades = len(trades)

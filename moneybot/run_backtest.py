@@ -7,6 +7,7 @@ import pandas as pd
 
 from .backtest import Backtester
 from .data_provider import BinanceKlinesProvider
+from .risk import RiskManager
 from .strategy import Strategy
 
 
@@ -33,11 +34,22 @@ def main() -> None:
     data_by_symbol = {symbol: df}
 
     strategy = TrendStrategy()
+    risk_manager = RiskManager(
+        max_open_positions=1,
+        risk_per_trade_pct=0.02,
+        daily_drawdown_limit_pct=0.05,
+        cooldown_candles_after_loss=3,
+        stop_loss_pct=strategy.stop_loss_pct,
+        take_profit_pct=strategy.take_profit_pct,
+        trailing_stop_pct=None,
+        max_holding_candles=strategy.max_holding_candles,
+    )
     backtester = Backtester(
         initial_balance=1000.0,
         fee_rate=0.001,
         slippage_bps=5,
         buffer_bps=10,
+        risk_manager=risk_manager,
     )
     result = backtester.run(strategy, data_by_symbol)
 
