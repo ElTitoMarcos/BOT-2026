@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -25,6 +25,10 @@ class ConfigPayload(BaseModel):
     api_secret: Optional[str] = None
     env: Optional[str] = None
     persist: bool = True
+
+
+class ModePayload(BaseModel):
+    mode: Literal["BACKTEST", "PAPER", "TESTNET", "LIVE"]
 
 
 @app.get("/", include_in_schema=False)
@@ -62,6 +66,12 @@ def control_pause() -> dict:
 @app.post("/control/resume")
 def control_resume() -> dict:
     runtime.resume()
+    return runtime.status()
+
+
+@app.post("/control/set-mode")
+def control_set_mode(payload: ModePayload) -> dict:
+    runtime.set_mode(payload.mode)
     return runtime.status()
 
 
