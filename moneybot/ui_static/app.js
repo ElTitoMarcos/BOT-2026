@@ -2,6 +2,7 @@ const tabButtons = document.querySelectorAll(".tab-button");
 const panels = document.querySelectorAll(".panel");
 
 const statusContainer = document.getElementById("status-data");
+const healthContainer = document.getElementById("health-data");
 const metricsContainer = document.getElementById("metrics-data");
 const tradesContainer = document.getElementById("trades-data");
 const logsContainer = document.getElementById("logs-data");
@@ -11,11 +12,13 @@ const tradesError = document.getElementById("trades-error");
 const logsError = document.getElementById("logs-error");
 const backtestError = document.getElementById("backtest-error");
 const statusUpdated = document.getElementById("status-updated");
+const healthUpdated = document.getElementById("health-updated");
 const metricsUpdated = document.getElementById("metrics-updated");
 const tradesUpdated = document.getElementById("trades-updated");
 const logsUpdated = document.getElementById("logs-updated");
 const backtestUpdated = document.getElementById("backtest-updated");
 const envValue = document.getElementById("env-value");
+const statusBadge = document.getElementById("status-badge");
 
 const startButton = document.getElementById("start-btn");
 const stopButton = document.getElementById("stop-btn");
@@ -23,8 +26,6 @@ const modeSelect = document.getElementById("mode-select");
 const toast = document.getElementById("toast");
 const backtestRunButton = document.getElementById("backtest-run-btn");
 const backtestDownloadButton = document.getElementById("backtest-download-btn");
-const backtestSymbols = document.getElementById("backtest-symbols");
-const backtestInterval = document.getElementById("backtest-interval");
 const backtestStartDate = document.getElementById("backtest-start-date");
 const backtestEndDate = document.getElementById("backtest-end-date");
 const backtestFeeRate = document.getElementById("backtest-fee-rate");
@@ -35,6 +36,7 @@ const backtestDiagnostics = document.getElementById("backtest-diagnostics");
 const backtestTrades = document.getElementById("backtest-trades");
 const backtestEquity = document.getElementById("backtest-equity");
 const backtestEquityEmpty = document.getElementById("backtest-equity-empty");
+const backtestProgress = document.getElementById("backtest-progress");
 
 let toastTimer;
 let currentStatus = null;
@@ -164,7 +166,11 @@ const refreshStatus = async () => {
     if (data?.mode) {
       modeSelect.value = data.mode;
     }
+    const healthSnapshot = buildHealthSnapshot(data);
+    renderKeyValue(healthContainer, healthSnapshot);
+    updateStatusBadge(data);
     statusUpdated.textContent = `Actualizado: ${new Date().toLocaleTimeString()}`;
+    healthUpdated.textContent = statusUpdated.textContent;
   } catch (error) {
     statusError.textContent = error.message;
   }
@@ -184,7 +190,7 @@ const refreshMetrics = async () => {
 const refreshTrades = async () => {
   tradesError.textContent = "";
   try {
-    const data = await fetchJson("/trades?limit=50");
+    const data = await fetchJson("/trades?limit=20");
     renderTrades(data.trades || []);
     tradesUpdated.textContent = `Actualizado: ${new Date().toLocaleTimeString()}`;
   } catch (error) {
@@ -281,6 +287,61 @@ const drawEquityCurve = (series) => {
   ctx.stroke();
 };
 
+const buildHealthSnapshot = (status) => {
+  const health = status?.live_feed_health || status?.live_feed || status?.health || {};
+  return {
+    "Mensajes/s":
+      health.messages_per_sec ??
+      health.msgs_per_sec ??
+      health.messages_per_second ??
+      "N/A",
+    Reconexiones: health.reconnects ?? health.reconnections ?? "N/A",
+    "Rate-limit": health.rate_limit ?? health.rate_limited ?? "N/A",
+    Cola: health.queue_depth ?? health.queue ?? "N/A",
+  };
+};
+
+const updateStatusBadge = (status) => {
+  if (!statusBadge) return;
+  const running = Boolean(status?.is_running);
+  const mode = status?.mode || "N/A";
+  statusBadge.textContent = `${running ? "RUNNING" : "STOPPED"} · ${mode}`;
+  statusBadge.classList.toggle("running", running);
+  statusBadge.classList.toggle("stopped", !running);
+};
+
+const updateBacktestProgress = (status) => {
+  if (!backtestProgress) return;
+  const steps = backtestProgress.querySelectorAll(".progress-step");
+  steps.forEach((step) => {
+    step.classList.remove("active", "done", "failed");
+  });
+  if (!status) return;
+  if (status.state === "failed") {
+    steps.forEach((step) => step.classList.add("failed"));
+    return;
+  }
+  const progress = Number(status.progress ?? 0);
+  let activeStep = "download";
+  if (progress >= 55) {
+    activeStep = "replay";
+  } else if (progress >= 35) {
+    activeStep = "record";
+  }
+  steps.forEach((step) => {
+    const name = step.dataset.step;
+    if (status.state === "completed" || name === activeStep) {
+      step.classList.add(status.state === "completed" ? "done" : "active");
+    }
+    if (
+      (activeStep === "record" && name === "download") ||
+      (activeStep === "replay" && (name === "download" || name === "record"))
+    ) {
+      step.classList.add("done");
+    }
+  });
+};
+
 const updateBacktestStatus = (status) => {
   if (!status) {
     backtestStatus.textContent = "";
@@ -292,6 +353,7 @@ const updateBacktestStatus = (status) => {
   backtestStatus.textContent = `${normalizedState} · ${status.progress ?? 0}% · ${
     status.message || ""
   }`;
+  updateBacktestProgress(status);
   backtestUpdated.textContent = `Actualizado: ${new Date().toLocaleTimeString()}`;
 };
 
@@ -387,13 +449,7 @@ modeSelect.addEventListener("change", (event) => {
 
 backtestRunButton.addEventListener("click", async () => {
   backtestError.textContent = "";
-  const symbols = backtestSymbols.value
-    .split(/[\n,]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
   const payload = {
-    symbols,
-    interval: backtestInterval.value || "1h",
     start_date: backtestStartDate.value || null,
     end_date: backtestEndDate.value || null,
     fee_rate: backtestFeeRate.value ? Number(backtestFeeRate.value) : 0.001,

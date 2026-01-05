@@ -66,6 +66,45 @@
         margin: 12px 0 16px;
         align-items: center;
       }
+      .overview-header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .overview-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }
+      .status-badge {
+        padding: 12px 20px;
+        border-radius: 999px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        background: #334155;
+        color: #e2e8f0;
+        font-size: 1rem;
+        text-transform: uppercase;
+      }
+      .status-badge.running {
+        background: #15803d;
+      }
+      .status-badge.stopped {
+        background: #1e293b;
+      }
+      .overview-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 16px;
+      }
+      .stack {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
       .control-group {
         display: flex;
         gap: 8px;
@@ -154,6 +193,9 @@
       .kv:last-child {
         border-bottom: none;
       }
+      .compact .kv {
+        font-size: 0.88rem;
+      }
       .metric {
         background: #111827;
         border-radius: 10px;
@@ -231,6 +273,36 @@
         font-size: 1rem;
         color: #cbd5f5;
       }
+      .progress-steps {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .progress-step {
+        padding: 12px;
+        border-radius: 10px;
+        border: 1px solid #1e293b;
+        background: #0b1120;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .progress-step strong {
+        font-size: 0.95rem;
+      }
+      .progress-step.active {
+        border-color: #38bdf8;
+        box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.2);
+      }
+      .progress-step.done {
+        border-color: #22c55e;
+        background: rgba(34, 197, 94, 0.12);
+      }
+      .progress-step.failed {
+        border-color: #f87171;
+        background: rgba(248, 113, 113, 0.12);
+      }
     </style>
   </head>
   <body>
@@ -243,50 +315,58 @@
     </header>
     <main>
       <div class="tabs">
-        <button class="tab-button active" data-tab="status">Status</button>
-        <button class="tab-button" data-tab="metrics">Metrics</button>
-        <button class="tab-button" data-tab="trades">Trades</button>
+        <button class="tab-button active" data-tab="overview">Overview</button>
         <button class="tab-button" data-tab="logs">Logs</button>
         <button class="tab-button" data-tab="backtest">Backtest</button>
       </div>
 
-      <section id="status" class="panel active">
+      <section id="overview" class="panel active">
         <div class="card">
-          <h2>Status</h2>
-          <div class="controls">
-            <div class="control-group">
-              <button class="btn primary" id="start-btn">Start</button>
-              <button class="btn secondary" id="stop-btn">Stop</button>
+          <div class="overview-header">
+            <div class="overview-actions">
+              <div class="control-group">
+                <label for="mode-select">Mode</label>
+                <select id="mode-select">
+                  <option value="SIM">SIM</option>
+                  <option value="LIVE">LIVE</option>
+                </select>
+              </div>
+              <div class="control-group">
+                <button class="btn primary" id="start-btn">Start</button>
+                <button class="btn secondary" id="stop-btn">Stop</button>
+              </div>
             </div>
-            <div class="control-group">
-              <label for="mode-select">Mode</label>
-              <select id="mode-select">
-                <option value="SIM">SIM</option>
-                <option value="LIVE">LIVE</option>
-              </select>
+            <div class="status-badge stopped" id="status-badge">STOPPED · SIM</div>
+          </div>
+        </div>
+        <div class="overview-grid">
+          <div class="stack">
+            <div class="card">
+              <h3>Status</h3>
+              <div id="status-data" class="kv compact"></div>
+              <div class="timestamp" id="status-updated"></div>
+              <div class="error" id="status-error"></div>
+            </div>
+            <div class="card">
+              <h3>Live Feed Health</h3>
+              <div id="health-data" class="kv compact"></div>
+              <div class="timestamp" id="health-updated"></div>
             </div>
           </div>
-          <div id="status-data"></div>
-          <div class="timestamp" id="status-updated"></div>
-          <div class="error" id="status-error"></div>
-        </div>
-      </section>
-
-      <section id="metrics" class="panel">
-        <div class="card">
-          <h2>Metrics</h2>
-          <div class="grid" id="metrics-data"></div>
-          <div class="timestamp" id="metrics-updated"></div>
-          <div class="error" id="metrics-error"></div>
-        </div>
-      </section>
-
-      <section id="trades" class="panel">
-        <div class="card">
-          <h2>Trades</h2>
-          <div id="trades-data"></div>
-          <div class="timestamp" id="trades-updated"></div>
-          <div class="error" id="trades-error"></div>
+          <div class="stack">
+            <div class="card">
+              <h3>Metrics</h3>
+              <div class="grid" id="metrics-data"></div>
+              <div class="timestamp" id="metrics-updated"></div>
+              <div class="error" id="metrics-error"></div>
+            </div>
+            <div class="card">
+              <h3>Trades recientes</h3>
+              <div id="trades-data"></div>
+              <div class="timestamp" id="trades-updated"></div>
+              <div class="error" id="trades-error"></div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -303,17 +383,6 @@
         <div class="card">
           <h2>Backtest</h2>
           <div class="controls">
-            <div class="control-group">
-              <label for="backtest-symbols">Symbols</label>
-              <textarea
-                id="backtest-symbols"
-                placeholder="BTCUSDT, ETHUSDT"
-              ></textarea>
-            </div>
-            <div class="control-group">
-              <label for="backtest-interval">Interval</label>
-              <input id="backtest-interval" type="text" placeholder="1h" />
-            </div>
             <div class="control-group">
               <label for="backtest-start-date">Start date</label>
               <input id="backtest-start-date" type="date" />
@@ -340,10 +409,24 @@
                 placeholder="0"
               />
             </div>
-            <button class="btn primary" id="backtest-run-btn">Run</button>
+            <button class="btn primary" id="backtest-run-btn">Run SIM</button>
             <button class="btn secondary" id="backtest-download-btn" disabled>
-              Download zip
+              Download report
             </button>
+          </div>
+          <div class="progress-steps" id="backtest-progress">
+            <div class="progress-step" data-step="download">
+              <strong>Download</strong>
+              <span class="muted">Esperando datos</span>
+            </div>
+            <div class="progress-step" data-step="record">
+              <strong>Record</strong>
+              <span class="muted">Pendiente</span>
+            </div>
+            <div class="progress-step" data-step="replay">
+              <strong>Replay</strong>
+              <span class="muted">Pendiente</span>
+            </div>
           </div>
           <div id="backtest-status" class="muted"></div>
           <div id="backtest-summary" class="grid"></div>
