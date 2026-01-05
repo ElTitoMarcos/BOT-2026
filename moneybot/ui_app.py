@@ -19,6 +19,7 @@ from binance.exceptions import BinanceAPIException
 from concurrent.futures import ThreadPoolExecutor
 from socket import gaierror
 from .data_provider import BinanceKlinesProvider
+from . import exchange_filters
 from .strategy import Strategy
 from .config import get_binance_credentials, load_environment, save_binance_credentials
 from .risk import RiskManager
@@ -317,22 +318,15 @@ class MoneyBotApp(tk.Tk):
             # Dividir la cantidad de BTC entre el precio de compra para obtener la cantidad exacta de monedas a comprar
             cantidad_exacta = cantidad_btc / compra_price
 
-            # Obtener información de intercambio para el símbolo
-            exchange_info = self.client.get_symbol_info(symbol)
-            lot_size_filter = next(f for f in exchange_info['filters'] if f['filterType'] == 'LOT_SIZE')
+            cantidad_exacta = exchange_filters.adjust_qty(symbol, cantidad_exacta)
+            if cantidad_exacta is None:
+                return
 
-            min_qty = float(lot_size_filter['minQty'])
-            max_qty = float(lot_size_filter['maxQty'])
-            step_size = float(lot_size_filter['stepSize'])
+            compra_price = exchange_filters.adjust_price(symbol, compra_price)
+            if compra_price is None:
+                return
 
-            # Ajustar la cantidad a comprar para cumplir con LOT_SIZE
-            cantidad_exacta = max(min_qty, min(cantidad_exacta, max_qty))
-
-            # Ajustar la cantidad exacta al step_size permitido
-            cantidad_exacta = math.floor(cantidad_exacta / step_size) * step_size
-
-            if cantidad_exacta < min_qty or cantidad_exacta > max_qty:
-                print(f"La cantidad ajustada {cantidad_exacta} está fuera de los límites permitidos para {symbol}.")
+            if not exchange_filters.validate_min_notional(symbol, compra_price, cantidad_exacta):
                 return
 
             nearest_buy_order = next((item for item in order_book['bids'] if float(item[0]) >= compra_price), None)
@@ -349,11 +343,8 @@ class MoneyBotApp(tk.Tk):
             if buy_quantity < 0.90 * sell_quantity:
                 return  # Pasa al siguiente símbolo sin ejecutar más código para este símbolo
 
-            # Redondear la cantidad al número de decimales permitido
-            cantidad_exacta_rounded = round(cantidad_exacta, 8)
-
             # Almacenar la cantidad exacta de monedas compradas en "self.quantity"
-            self.quantity = cantidad_exacta_rounded
+            self.quantity = cantidad_exacta
 
             vwap, avg_buy_price, avg_sell_price = self.strategy.calcular_datos(symbol)
 
@@ -371,7 +362,7 @@ class MoneyBotApp(tk.Tk):
                         side='BUY',
                         type='LIMIT',
                         timeInForce='GTC',
-                        quantity=cantidad_exacta_rounded,
+                        quantity=cantidad_exacta,
                         price=order_price_formatted  # Utilizar el precio de compra formateado como cadena
                     )
 
@@ -729,10 +720,8 @@ class MoneyBotApp(tk.Tk):
                 balance_info = self.client.get_asset_balance(asset=base_asset)
                 available_balance = float(balance_info['free'])
 
-                # Redondear hacia abajo el saldo disponible y convertirlo a entero
-                order_quantity = int(math.floor(available_balance))
-
-                if order_quantity <= 0:
+                order_quantity = exchange_filters.adjust_qty(symbol, available_balance)
+                if order_quantity is None or order_quantity <= 0:
                     print(f"No hay suficiente saldo disponible para vender en {symbol}.")
                     self.saldo_insuficiente = False
                     return
@@ -748,6 +737,13 @@ class MoneyBotApp(tk.Tk):
                 target_price = order_price * (1 + take_profit_pct)
                 precio_venta = math.ceil(target_price / tick_size) * tick_size
                 precio_venta = round(precio_venta, 8)
+
+                precio_venta = exchange_filters.adjust_price(symbol, precio_venta)
+                if precio_venta is None:
+                    return
+
+                if not exchange_filters.validate_min_notional(symbol, precio_venta, order_quantity):
+                    return
 
                 precio_venta_str = "{:.8f}".format(precio_venta)  # Formatear el precio de venta como una cadena
 
@@ -1715,6 +1711,7 @@ class MoneyBotApp(tk.Tk):
         if self.api_key and self.api_secret:
             try:
                 self.client = Client(self.api_key, self.api_secret)
+                exchange_filters.configure(self.client)
                 account_info = self.client.get_account()
                 if 'makerCommission' in account_info:
                     self.find_optimal_coins_button.config(state=tk.NORMAL)
