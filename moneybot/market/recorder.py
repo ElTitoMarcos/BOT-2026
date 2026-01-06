@@ -90,6 +90,14 @@ class BinanceHFRecorder:
         last_error_message: Optional[str] = None
         last_error_ts = 0.0
 
+        def safe_callback(name: str, func, *args) -> None:
+            try:
+                func(*args)
+            except websocket.WebSocketConnectionClosedException:
+                LOGGER.debug("WS callback %s ignorado: stream cerrado", name)
+            except Exception as exc:
+                LOGGER.warning("WS callback %s fallo: %s", name, exc)
+
         def on_error(_ws: websocket.WebSocketApp, error: object) -> None:
             nonlocal last_error_message, last_error_ts
             if stop_event.is_set():
@@ -108,19 +116,37 @@ class BinanceHFRecorder:
                 return
             LOGGER.warning("WS error (%s streams): %s", len(streams), message)
 
+        def on_open(_ws: websocket.WebSocketApp) -> None:
+            if self._metrics:
+                self._metrics.connection_open()
+
+        def on_message(_ws: websocket.WebSocketApp, message: str) -> None:
+            self._handle_message(message)
+
+        def on_close(_ws: websocket.WebSocketApp, status: int, reason: str) -> None:
+            LOGGER.info("WS cerrado (%s streams): %s %s", len(streams), status, reason)
+
+        def on_ping(_ws: websocket.WebSocketApp, message: str) -> None:
+            LOGGER.debug("WS ping %s", message)
+
+        def on_pong(_ws: websocket.WebSocketApp, message: str) -> None:
+            LOGGER.debug("WS pong %s", message)
+
         while not stop_event.is_set():
             ws = websocket.WebSocketApp(
                 url,
-                on_open=lambda _ws: self._metrics.connection_open()
-                if self._metrics
-                else None,
-                on_message=lambda _ws, message: self._handle_message(message),
+                on_open=lambda _ws: safe_callback("open", on_open, _ws),
+                on_message=lambda _ws, message: safe_callback("message", on_message, _ws, message),
                 on_error=on_error,
-                on_close=lambda _ws, status, reason: LOGGER.info(
-                    "WS cerrado (%s streams): %s %s", len(streams), status, reason
+                on_close=lambda _ws, status, reason: safe_callback(
+                    "close",
+                    on_close,
+                    _ws,
+                    status,
+                    reason,
                 ),
-                on_ping=lambda _ws, message: LOGGER.debug("WS ping %s", message),
-                on_pong=lambda _ws, message: LOGGER.debug("WS pong %s", message),
+                on_ping=lambda _ws, message: safe_callback("ping", on_ping, _ws, message),
+                on_pong=lambda _ws, message: safe_callback("pong", on_pong, _ws, message),
             )
             ws.run_forever(ping_interval=20, ping_timeout=10)
             if self._metrics:
