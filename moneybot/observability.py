@@ -100,6 +100,14 @@ class ObservabilityStore:
         self._losses = 0
         self._peak = 0.0
         self._max_drawdown = 0.0
+        self._risk_metrics: Dict[str, Optional[float | int | bool]] = {
+            "open_positions": 0,
+            "total_exposure": 0.0,
+            "stop_loss_triggered": False,
+            "max_open_positions": None,
+            "max_exposure_per_symbol": None,
+            "global_stop_loss_pct": None,
+        }
 
     def record_trade(self, trade: Dict[str, Any]) -> None:
         with self._lock:
@@ -122,15 +130,49 @@ class ObservabilityStore:
         with self._lock:
             return list(self._trades)[:limit]
 
-    def get_metrics(self) -> Dict[str, Optional[float]]:
+    def get_metrics(self) -> Dict[str, Optional[float | int | bool]]:
         with self._lock:
             total = self._wins + self._losses
             winrate = (self._wins / total) if total else None
-            return {
+            metrics: Dict[str, Optional[float | int | bool]] = {
                 "pnl": self._pnl,
                 "drawdown": self._max_drawdown,
                 "winrate": winrate,
             }
+            metrics.update(self._risk_metrics)
+            return metrics
+
+    def get_pnl_snapshot(self) -> Dict[str, float]:
+        with self._lock:
+            return {
+                "pnl": self._pnl,
+                "peak": self._peak,
+                "max_drawdown": self._max_drawdown,
+            }
+
+    def set_risk_limits(
+        self,
+        *,
+        max_open_positions: Optional[int],
+        max_exposure_per_symbol: Optional[float],
+        global_stop_loss_pct: Optional[float],
+    ) -> None:
+        with self._lock:
+            self._risk_metrics["max_open_positions"] = max_open_positions
+            self._risk_metrics["max_exposure_per_symbol"] = max_exposure_per_symbol
+            self._risk_metrics["global_stop_loss_pct"] = global_stop_loss_pct
+
+    def update_risk_snapshot(
+        self,
+        *,
+        open_positions: int,
+        total_exposure: float,
+        stop_loss_triggered: bool,
+    ) -> None:
+        with self._lock:
+            self._risk_metrics["open_positions"] = open_positions
+            self._risk_metrics["total_exposure"] = total_exposure
+            self._risk_metrics["stop_loss_triggered"] = stop_loss_triggered
 
 
 def create_observability_app(bot_app: Any, store: ObservabilityStore):
@@ -147,7 +189,7 @@ def create_observability_app(bot_app: Any, store: ObservabilityStore):
         return {"trades": store.get_trades(limit)}
 
     @app.get("/metrics")
-    def metrics() -> Dict[str, Optional[float]]:
+    def metrics() -> Dict[str, Optional[float | int | bool]]:
         return store.get_metrics()
 
     return app

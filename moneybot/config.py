@@ -15,6 +15,26 @@ UNIVERSE_TOP_N = int(os.getenv("UNIVERSE_TOP_N", "30"))
 LOOKBACK_DAYS_DEFAULT = int(os.getenv("LOOKBACK_DAYS_DEFAULT", "30"))
 
 
+def _optional_int(name: str) -> Optional[int]:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return None
+    return int(value)
+
+
+def _optional_float(name: str) -> Optional[float]:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return None
+    return float(value)
+
+
+MAX_OPEN_POSITIONS = _optional_int("MAX_OPEN_POSITIONS")
+MAX_EXPOSURE_PER_SYMBOL = _optional_float("MAX_EXPOSURE_PER_SYMBOL")
+GLOBAL_STOP_LOSS_PCT = _optional_float("GLOBAL_STOP_LOSS_PCT")
+NOTIFICATION_WEBHOOK_URL = os.getenv("NOTIFICATION_WEBHOOK_URL")
+
+
 def load_env(env_path: Path | str = ENV_PATH) -> None:
     env_file = Path(env_path)
     if env_file.exists():
@@ -78,6 +98,10 @@ __all__ = [
     "ENV_PATH",
     "HF_INTERVAL",
     "LOOKBACK_DAYS_DEFAULT",
+    "GLOBAL_STOP_LOSS_PCT",
+    "MAX_EXPOSURE_PER_SYMBOL",
+    "MAX_OPEN_POSITIONS",
+    "NOTIFICATION_WEBHOOK_URL",
     "UNIVERSE_TOP_N",
     "VALID_ENVIRONMENTS",
     "get_config",
