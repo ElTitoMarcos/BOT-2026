@@ -109,6 +109,12 @@ const renderStatusSummary = (status) => {
         ? "N/A"
         : `${Math.max(0, Math.round(status.last_ws_event_age_ms))} ms`
     }`,
+    `Reconexiones WS: ${status?.reconnects ?? "N/A"}`,
+    `Latencia ping WS promedio: ${
+      status?.avg_ping_latency_ms === null || status?.avg_ping_latency_ms === undefined
+        ? "N/A"
+        : `${Math.max(0, status.avg_ping_latency_ms).toFixed(2)} ms`
+    }`,
   ];
   statusSummary.innerHTML = lines.map((line) => `<div>${line}</div>`).join("");
 };
@@ -281,6 +287,8 @@ const refreshStatus = async () => {
       "uptime_s",
       "event_rate_per_s",
       "last_ws_event_age_ms",
+      "reconnects",
+      "avg_ping_latency_ms",
     ].forEach((key) => {
       delete statusExtras[key];
     });

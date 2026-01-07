@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import threading
 import time
@@ -100,6 +101,25 @@ class BinanceHFRecorder:
         url = f"{self.ws_url}?streams={query}&timeUnit=MICROSECOND"
         last_error_message: Optional[str] = None
         last_error_ts = 0.0
+        attempt = 0
+        last_open_ts: Optional[float] = None
+
+        def _parse_env_int(value: Optional[str], default: int) -> int:
+            if value is None or value == "":
+                return default
+            try:
+                return int(value)
+            except ValueError:
+                return default
+
+        interval_env = os.getenv("WS_PING_INTERVAL")
+        timeout_env = os.getenv("WS_PING_TIMEOUT")
+        if interval_env is None and timeout_env is None:
+            ping_interval = 20
+            ping_timeout = 10
+        else:
+            ping_interval = _parse_env_int(interval_env, 15)
+            ping_timeout = _parse_env_int(timeout_env, 30)
 
         def safe_callback(name: str, func, *args) -> None:
             try:
@@ -128,6 +148,8 @@ class BinanceHFRecorder:
             LOGGER.warning("WS error (%s streams): %s", len(streams), message)
 
         def on_open(_ws: websocket.WebSocketApp) -> None:
+            nonlocal last_open_ts
+            last_open_ts = time.monotonic()
             if self._metrics:
                 self._metrics.connection_open()
 
@@ -138,12 +160,27 @@ class BinanceHFRecorder:
             LOGGER.info("WS cerrado (%s streams): %s %s", len(streams), status, reason)
 
         def on_ping(_ws: websocket.WebSocketApp, message: str) -> None:
-            LOGGER.debug("WS ping %s", message)
+            LOGGER.debug("WS ping (%s streams): %s", len(streams), message)
 
         def on_pong(_ws: websocket.WebSocketApp, message: str) -> None:
-            LOGGER.debug("WS pong %s", message)
+            latency_ms = None
+            ping_sent = getattr(_ws, "last_ping_tm", None)
+            if ping_sent is not None:
+                latency_ms = max(0.0, (time.monotonic() - ping_sent) * 1000)
+                if self._metrics:
+                    self._metrics.record_ping_latency_ms(latency_ms)
+            if latency_ms is None:
+                LOGGER.debug("WS pong (%s streams): %s", len(streams), message)
+            else:
+                LOGGER.debug(
+                    "WS pong (%s streams): %s (latencia %.2f ms)",
+                    len(streams),
+                    message,
+                    latency_ms,
+                )
 
         while not stop_event.is_set():
+            last_open_ts = None
             ws = websocket.WebSocketApp(
                 url,
                 on_open=lambda _ws: safe_callback("open", on_open, _ws),
@@ -159,12 +196,18 @@ class BinanceHFRecorder:
                 on_ping=lambda _ws, message: safe_callback("ping", on_ping, _ws, message),
                 on_pong=lambda _ws, message: safe_callback("pong", on_pong, _ws, message),
             )
-            ws.run_forever(ping_interval=20, ping_timeout=10)
+            ws.run_forever(ping_interval=ping_interval, ping_timeout=ping_timeout)
             if self._metrics:
                 self._metrics.connection_closed()
             if stop_event.is_set():
                 break
-            delay = 1.0 + random.uniform(0, 2.0)
+            now = time.monotonic()
+            if last_open_ts is not None and (now - last_open_ts) >= 600:
+                attempt = 0
+            if self._metrics:
+                self._metrics.record_reconnect()
+            delay = min(60.0, (2**attempt) + random.random())
+            attempt += 1
             time.sleep(delay)
 
     def _handle_message(self, message: str) -> None:
