@@ -26,6 +26,8 @@ def get_config() -> Dict[str, Optional[str]]:
         "BINANCE_API_KEY": os.environ.get("BINANCE_API_KEY"),
         "BINANCE_API_SECRET": os.environ.get("BINANCE_API_SECRET"),
         "ENV": os.environ.get("ENV", "LIVE").upper(),
+        "LIVE_WS_URL": os.environ.get("LIVE_WS_URL"),
+        "TESTNET_WS_URL": os.environ.get("TESTNET_WS_URL"),
     }
 
 
@@ -33,6 +35,8 @@ def save_config(
     api_key: Optional[str],
     api_secret: Optional[str],
     env: Optional[str],
+    live_ws_url: Optional[str] = None,
+    testnet_ws_url: Optional[str] = None,
     env_path: Path | str = ENV_PATH,
     persist: bool = True,
 ) -> None:
@@ -51,6 +55,10 @@ def save_config(
             set_key(str(env_file), "BINANCE_API_SECRET", api_secret)
         if env is not None:
             set_key(str(env_file), "ENV", env)
+        if live_ws_url is not None:
+            set_key(str(env_file), "LIVE_WS_URL", live_ws_url)
+        if testnet_ws_url is not None:
+            set_key(str(env_file), "TESTNET_WS_URL", testnet_ws_url)
 
     if api_key is not None:
         os.environ["BINANCE_API_KEY"] = api_key
@@ -58,6 +66,10 @@ def save_config(
         os.environ["BINANCE_API_SECRET"] = api_secret
     if env is not None:
         os.environ["ENV"] = env
+    if live_ws_url is not None:
+        os.environ["LIVE_WS_URL"] = live_ws_url
+    if testnet_ws_url is not None:
+        os.environ["TESTNET_WS_URL"] = testnet_ws_url
 
 
 __all__ = [

@@ -62,11 +62,13 @@ class ConfigPayload(BaseModel):
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
     env: Optional[str] = None
+    live_ws_url: Optional[str] = None
+    testnet_ws_url: Optional[str] = None
     persist: bool = True
 
 
 class ModePayload(BaseModel):
-    mode: Literal["SIM", "LIVE"]
+    mode: Literal["SIM", "LIVE", "TESTNET", "HIST"]
 
 
 class BacktestRunPayload(BaseModel):
@@ -89,6 +91,8 @@ def config_status() -> dict:
     return {
         "has_api_key": bool(config.get("BINANCE_API_KEY")),
         "env": config.get("ENV", "LIVE"),
+        "live_ws_url": config.get("LIVE_WS_URL"),
+        "testnet_ws_url": config.get("TESTNET_WS_URL"),
     }
 
 
@@ -106,6 +110,11 @@ def control_stop() -> dict:
 
 @app.post("/control/set-mode")
 def control_set_mode(payload: ModePayload) -> dict:
+    if payload.mode not in {"SIM", "LIVE", "TESTNET", "HIST"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Modo inválido: {payload.mode}. Usa SIM, LIVE, TESTNET o HIST.",
+        )
     runtime.set_mode(payload.mode)
     return runtime.status()
 
@@ -149,6 +158,8 @@ def config_save(payload: ConfigPayload) -> dict:
     api_key = payload.api_key.strip() if payload.api_key else None
     api_secret = payload.api_secret.strip() if payload.api_secret else None
     env = payload.env.strip().upper() if payload.env else current.get("ENV", "LIVE")
+    live_ws_url = payload.live_ws_url.strip() if payload.live_ws_url else None
+    testnet_ws_url = payload.testnet_ws_url.strip() if payload.testnet_ws_url else None
 
     if api_key and api_key.startswith("****"):
         api_key = None
@@ -164,11 +175,20 @@ def config_save(payload: ConfigPayload) -> dict:
     if api_secret is None:
         api_secret = current.get("BINANCE_API_SECRET")
 
-    save_config(api_key, api_secret, env, persist=payload.persist)
+    save_config(
+        api_key,
+        api_secret,
+        env,
+        live_ws_url=live_ws_url,
+        testnet_ws_url=testnet_ws_url,
+        persist=payload.persist,
+    )
 
     return {
         "has_api_key": bool(api_key),
         "env": env,
+        "live_ws_url": live_ws_url or current.get("LIVE_WS_URL"),
+        "testnet_ws_url": testnet_ws_url or current.get("TESTNET_WS_URL"),
     }
 
 
