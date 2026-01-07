@@ -8,6 +8,12 @@ from dataclasses import dataclass, field
 from typing import Any, Deque, Optional
 
 from moneybot.backtest.simulator import SimOrder
+from moneybot.config import (
+    GLOBAL_STOP_LOSS_PCT,
+    MAX_EXPOSURE_PER_SYMBOL,
+    MAX_OPEN_POSITIONS,
+)
+from moneybot.notifications import send_notification
 from moneybot.observability import ObservabilityStore
 
 from .base_strategy import BaseStrategy
@@ -28,6 +34,7 @@ class SymbolAccumulationState:
     ask_qty: Optional[float] = None
     last_price: Optional[float] = None
     queued_orders: list[SimOrder] = field(default_factory=list)
+    liquidation_sent: bool = False
 
 
 class AccumulationStrategy(BaseStrategy):
@@ -51,7 +58,17 @@ class AccumulationStrategy(BaseStrategy):
         self.profit_tick = profit_tick
         self.fee_rate = fee_rate
         self.observability = observability or ObservabilityStore()
+        self.max_open_positions = MAX_OPEN_POSITIONS
+        self.max_exposure_per_symbol = MAX_EXPOSURE_PER_SYMBOL
+        self.global_stop_loss_pct = GLOBAL_STOP_LOSS_PCT
+        self._halt_trading = False
+        self._stop_loss_triggered = False
         self._state_by_symbol: dict[str, SymbolAccumulationState] = {}
+        self.observability.set_risk_limits(
+            max_open_positions=self.max_open_positions,
+            max_exposure_per_symbol=self.max_exposure_per_symbol,
+            global_stop_loss_pct=self.global_stop_loss_pct,
+        )
 
     def on_event(self, event: Any, state: Any) -> list[SimOrder]:
         symbol = getattr(event, "symbol", None) or getattr(state, "symbol", None)
@@ -79,6 +96,11 @@ class AccumulationStrategy(BaseStrategy):
         previous_price = symbol_state.last_price
         if current_price is not None:
             symbol_state.last_price = current_price
+
+        if self._check_global_stop_loss():
+            orders.extend(self._build_liquidation_orders())
+            self._update_risk_metrics()
+            return orders
 
         total_volume = symbol_state.buy_volume + symbol_state.sell_volume
         buy_ratio = self._buy_side_ratio(symbol_state)
@@ -110,8 +132,16 @@ class AccumulationStrategy(BaseStrategy):
                 symbol_state.pending_order_id = None
                 symbol_state.pending_side = None
 
-        if symbol_state.position_qty <= 0 and symbol_state.pending_order_id is None:
-            if self._entry_conditions_met(symbol_state, buy_ratio, total_volume, has_resistance, current_price):
+        if (
+            symbol_state.position_qty <= 0
+            and symbol_state.pending_order_id is None
+            and not self._halt_trading
+        ):
+            if not self._risk_allows_new_position(current_price):
+                logging.info("Límite de riesgo alcanzado, no se abre posición en %s.", symbol)
+            elif self._entry_conditions_met(
+                symbol_state, buy_ratio, total_volume, has_resistance, current_price
+            ):
                 order_id = uuid.uuid4().hex
                 orders.append(
                     SimOrder(
@@ -156,6 +186,7 @@ class AccumulationStrategy(BaseStrategy):
                     target_price,
                 )
 
+        self._update_risk_metrics()
         return orders
 
     def on_fill(self, fill: Any) -> None:
@@ -179,6 +210,17 @@ class AccumulationStrategy(BaseStrategy):
                 fill.price,
                 fill.quantity,
             )
+            send_notification(
+                "order_executed",
+                {
+                    "symbol": symbol,
+                    "side": side,
+                    "price": fill.price,
+                    "quantity": fill.quantity,
+                    "fee": fill_fee,
+                    "order_id": fill.order_id,
+                },
+            )
         elif side == "SELL":
             prior_position = symbol_state.position_qty
             symbol_state.position_qty = max(0.0, symbol_state.position_qty - fill.quantity)
@@ -193,6 +235,7 @@ class AccumulationStrategy(BaseStrategy):
             if symbol_state.position_qty <= 0:
                 symbol_state.entry_price = None
                 symbol_state.entry_fee = 0.0
+                symbol_state.liquidation_sent = False
             logging.info(
                 "SELL ejecutado en %s a %.8f por %.6f. PnL %.4f.",
                 symbol,
@@ -200,6 +243,29 @@ class AccumulationStrategy(BaseStrategy):
                 fill.quantity,
                 pnl_delta,
             )
+            send_notification(
+                "order_executed",
+                {
+                    "symbol": symbol,
+                    "side": side,
+                    "price": fill.price,
+                    "quantity": fill.quantity,
+                    "fee": fill_fee,
+                    "order_id": fill.order_id,
+                    "pnl": pnl_delta,
+                },
+            )
+            if symbol_state.position_qty <= 0:
+                send_notification(
+                    "position_closed",
+                    {
+                        "symbol": symbol,
+                        "exit_price": fill.price,
+                        "quantity": fill.quantity,
+                        "pnl": pnl_delta,
+                    },
+                )
+        self._update_risk_metrics()
 
     def _update_trade_volume(self, symbol_state: SymbolAccumulationState, payload: dict, timestamp_us: int) -> None:
         qty = self._to_float(payload.get("q")) or 0.0
@@ -301,3 +367,91 @@ class AccumulationStrategy(BaseStrategy):
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    def _risk_allows_new_position(self, current_price: Optional[float]) -> bool:
+        if current_price is None:
+            return False
+        if self.max_open_positions is not None:
+            if self._open_positions_count() >= self.max_open_positions:
+                return False
+        if self.max_exposure_per_symbol is not None:
+            if self.trade_notional > self.max_exposure_per_symbol:
+                return False
+        return True
+
+    def _open_positions_count(self) -> int:
+        return sum(1 for symbol_state in self._state_by_symbol.values() if symbol_state.position_qty > 0)
+
+    def _total_exposure(self) -> float:
+        exposure = 0.0
+        for symbol_state in self._state_by_symbol.values():
+            if symbol_state.position_qty <= 0:
+                continue
+            price = symbol_state.last_price or symbol_state.entry_price
+            if price is None:
+                continue
+            exposure += symbol_state.position_qty * price
+        return exposure
+
+    def _update_risk_metrics(self) -> None:
+        self.observability.update_risk_snapshot(
+            open_positions=self._open_positions_count(),
+            total_exposure=self._total_exposure(),
+            stop_loss_triggered=self._stop_loss_triggered,
+        )
+
+    def _check_global_stop_loss(self) -> bool:
+        if self._stop_loss_triggered or self.global_stop_loss_pct is None:
+            return self._stop_loss_triggered
+        pnl_snapshot = self.observability.get_pnl_snapshot()
+        peak = pnl_snapshot["peak"]
+        max_drawdown = pnl_snapshot["max_drawdown"]
+        if max_drawdown <= 0:
+            return False
+        denominator = abs(peak) if abs(peak) > 1e-9 else 1.0
+        drawdown_pct = max_drawdown / denominator
+        if drawdown_pct < self.global_stop_loss_pct:
+            return False
+        self._stop_loss_triggered = True
+        self._halt_trading = True
+        logging.warning(
+            "Stop-loss global activado: drawdown %.2f%% (límite %.2f%%).",
+            drawdown_pct * 100,
+            self.global_stop_loss_pct * 100,
+        )
+        send_notification(
+            "risk_stop",
+            {
+                "drawdown_pct": drawdown_pct,
+                "max_drawdown": max_drawdown,
+                "global_stop_loss_pct": self.global_stop_loss_pct,
+            },
+        )
+        return True
+
+    def _build_liquidation_orders(self) -> list[SimOrder]:
+        orders: list[SimOrder] = []
+        for symbol, symbol_state in self._state_by_symbol.items():
+            if symbol_state.pending_order_id:
+                orders.append(
+                    SimOrder(
+                        symbol=symbol,
+                        side=symbol_state.pending_side or "BUY",
+                        order_type="cancel",
+                        quantity=0.0,
+                        order_id=symbol_state.pending_order_id,
+                    )
+                )
+                symbol_state.pending_order_id = None
+                symbol_state.pending_side = None
+            if symbol_state.position_qty > 0 and not symbol_state.liquidation_sent:
+                orders.append(
+                    SimOrder(
+                        symbol=symbol,
+                        side="SELL",
+                        order_type="market",
+                        quantity=symbol_state.position_qty,
+                    )
+                )
+                symbol_state.liquidation_sent = True
+        return orders
