@@ -131,6 +131,21 @@ def ui_heartbeat() -> dict:
 
 @app.get("/status")
 def runtime_status() -> dict:
+    """Devuelve el estado actual del runtime.
+
+    Campos del payload:
+    - is_running: indica si el bot está activo.
+    - mode: modo de ejecución actual (SIM/LIVE/TESTNET/HIST).
+    - last_update_ts: timestamp Unix de la última actualización recibida.
+    - last_update_iso: timestamp ISO-8601 de la última actualización.
+    - last_update_age_s: segundos desde la última actualización.
+    - uptime_s: tiempo total de actividad del proceso en segundos.
+    - event_rate_per_s: eventos por segundo por stream (aggTrade/depth/bookTicker).
+    - ws_connected: si hay conexión WebSocket activa.
+    - last_ws_event_age_ms: milisegundos desde el último evento WS recibido.
+    - reconnects: cantidad de reconexiones WebSocket.
+    - avg_ping_latency_ms: latencia promedio de ping WebSocket en milisegundos.
+    """
     return runtime.status()
 
 

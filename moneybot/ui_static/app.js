@@ -100,10 +100,15 @@ const formatEventRates = (rates) => {
 
 const renderStatusSummary = (status) => {
   if (!statusSummary) return;
+  const eventRatesTooltip =
+    "aggTrade = aggregated trades; depth = order-book updates; bookTicker = best bid/ask.";
+  const eventRatesLine = `${formatEventRates(
+    status?.event_rate_per_s || {},
+  )} <span class="info-icon" title="${eventRatesTooltip}" aria-label="${eventRatesTooltip}">i</span>`;
   const lines = [
     formatLastUpdate(status),
     `Uptime: ${formatDuration(status?.uptime_s)}`,
-    formatEventRates(status?.event_rate_per_s || {}),
+    eventRatesLine,
     `Edad último evento WS: ${
       status?.last_ws_event_age_ms === null || status?.last_ws_event_age_ms === undefined
         ? "N/A"
