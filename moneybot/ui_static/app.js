@@ -19,6 +19,7 @@ const tradesUpdated = document.getElementById("trades-updated");
 const logsUpdated = document.getElementById("logs-updated");
 const envValue = document.getElementById("env-value");
 const statusBadge = document.getElementById("status-badge");
+const logsClearButton = document.getElementById("logs-clear-btn");
 
 const startButton = document.getElementById("start-btn");
 const stopButton = document.getElementById("stop-btn");
@@ -256,6 +257,17 @@ const fetchJson = async (url, options = {}) => {
   return response.json();
 };
 
+const getLogCleanToken = () => {
+  let token = sessionStorage.getItem("logCleanToken");
+  if (!token) {
+    token = window.prompt("Ingresa el token para limpiar logs:");
+    if (token) {
+      sessionStorage.setItem("logCleanToken", token);
+    }
+  }
+  return token;
+};
+
 const refreshStatus = async () => {
   statusError.textContent = "";
   try {
@@ -487,6 +499,28 @@ recordStopButton.addEventListener("click", async () => {
     recordError.textContent = error.message;
   }
 });
+
+if (logsClearButton) {
+  logsClearButton.addEventListener("click", async () => {
+    const token = getLogCleanToken();
+    if (!token) {
+      showToast("Token requerido para limpiar logs.", true);
+      return;
+    }
+    try {
+      await fetchJson("/logs/clear", {
+        method: "POST",
+        headers: {
+          "X-API-Token": token,
+        },
+      });
+      showToast("Logs limpiados");
+      refreshLogs();
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  });
+}
 
 refreshEnv();
 refreshSymbols().then(refreshDataDates);

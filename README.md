@@ -21,6 +21,20 @@ MoneyBot expone una UI web vía FastAPI, por lo que no requiere entorno gráfico
 en la máquina donde corre. Puedes abrir `/ui` desde cualquier navegador en otra
 máquina si la red lo permite.
 
+## Logs y limpieza
+
+Los logs se guardan en `logs/moneybot.log` con rotación automática. Puedes ajustar
+la retención con:
+
+- `LOG_MAX_BYTES`: tamaño máximo del archivo antes de rotar (por defecto 5 MB).
+- `LOG_BACKUP_COUNT`: cantidad de backups a conservar (por defecto 5).
+
+Para limpiar logs de forma manual o programada, hay dos endpoints protegidos por
+`LOG_CLEAN_TOKEN` enviado en el header `X-API-Token`:
+
+- `POST /logs/clear`: vacía el log principal y borra backups rotados.
+- `POST /logs/delete`: elimina el directorio de logs y recrea un log vacío.
+
 ## Modos de ejecución
 
 MoneyBot soporta los siguientes modos configurables con `BOT_MODE`:
