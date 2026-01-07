@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 import os
 import threading
 import time
@@ -10,10 +11,11 @@ from typing import Any, Optional
 from moneybot.backtest.replay import ReplayEngine
 from moneybot.backtest.simulator import ExecutionSimulator, SimOrder
 from moneybot.config import LOOKBACK_DAYS_DEFAULT
-from moneybot.datastore import DataStore
+from moneybot.datastore import DataStore, normalize_timestamp
 from moneybot.market.recorder import BinanceHFRecorder
 from moneybot.market.stream_metrics import StreamMetrics
 from moneybot.market_streams import BinanceStreamCache
+from moneybot.market.testnet_stream_cache import TestnetStreamCache
 
 
 @dataclass
@@ -74,9 +76,9 @@ class SimReplayStrategy:
 
 
 class BotRuntime:
-    def __init__(self, mode: str = "SIM") -> None:
+    def __init__(self, mode: Optional[str] = None) -> None:
         self.is_running = False
-        self.mode = mode
+        self.mode = (mode or os.getenv("BOT_MODE", "SIM")).upper()
         self.last_update_ts: Optional[float] = None
         self.stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -94,7 +96,13 @@ class BotRuntime:
             self.stop_event.clear()
             self.is_running = True
             self.last_update_ts = time.time()
-            target = self._run_sim_pipeline if self.mode == "SIM" else self._run_live_engine
+            targets = {
+                "SIM": self._run_sim_pipeline,
+                "LIVE": self._run_live_engine,
+                "TESTNET": self._run_testnet_engine,
+                "HIST": self._run_historical_engine,
+            }
+            target = targets.get(self.mode, self._run_sim_pipeline)
             self._thread = threading.Thread(target=target, daemon=True)
             self._thread.start()
 
@@ -109,7 +117,7 @@ class BotRuntime:
         self.is_running = False
 
     def set_mode(self, mode: str) -> None:
-        self.mode = mode
+        self.mode = mode.upper()
 
     def status(self) -> dict:
         now = time.time()
@@ -207,6 +215,89 @@ class BotRuntime:
                     self.last_update_ts = time.time()
                 if not updated:
                     time.sleep(poll_interval)
+        finally:
+            self.is_running = False
+
+    def _run_testnet_engine(self) -> None:
+        try:
+            symbols = self._parse_symbols(os.getenv("TESTNET_SYMBOLS"), ["BTCUSDT"])
+            ws_url = os.getenv("TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+            poll_interval = float(os.getenv("LIVE_POLL_INTERVAL", "0.5"))
+            stream_cache = TestnetStreamCache(
+                ws_url=ws_url,
+                api_key=os.getenv("BINANCE_API_KEY"),
+                api_secret=os.getenv("BINANCE_API_SECRET"),
+                metrics=self._ws_metrics,
+            )
+            for symbol in symbols:
+                stream_cache.ensure_price_stream(symbol)
+
+            while not self.stop_event.is_set():
+                updated = False
+                for symbol in symbols:
+                    price = stream_cache.get_price(symbol)
+                    if price is None:
+                        continue
+                    updated = True
+                    self.last_update_ts = time.time()
+                if not updated:
+                    time.sleep(poll_interval)
+        finally:
+            self.is_running = False
+
+    def _run_historical_engine(self) -> None:
+        try:
+            datastore = DataStore()
+            symbols = self._parse_symbols(os.getenv("HIST_SYMBOLS"), ["BTCUSDT"])
+            ranges: list[tuple[datetime, datetime]] = []
+            for symbol in symbols:
+                start_dt, end_dt = datastore.available_range(symbol)
+                if start_dt and end_dt:
+                    ranges.append((start_dt, end_dt))
+            if not ranges:
+                return
+            earliest_start = min(start for start, _ in ranges)
+            latest_end = max(end for _, end in ranges)
+            start_ts_ms = int(earliest_start.timestamp() * 1000)
+            end_ts_ms = int(latest_end.timestamp() * 1000)
+            streams = ("aggTrade", "depth", "bookTicker")
+
+            def stream_iter(symbol: str, stream: str):
+                for payload in datastore.iter_events(symbol, stream, start_ts_ms, end_ts_ms):
+                    ts_ms = normalize_timestamp(payload.get("T") or payload.get("E"))
+                    if ts_ms <= 0 or ts_ms < start_ts_ms or ts_ms > end_ts_ms:
+                        continue
+                    yield ts_ms, payload
+
+            heap: list[tuple[int, int, str, str, dict, Any]] = []
+            seq = 0
+            for symbol in symbols:
+                for stream in streams:
+                    iterator = iter(stream_iter(symbol, stream))
+                    try:
+                        ts_ms, payload = next(iterator)
+                    except StopIteration:
+                        continue
+                    heapq.heappush(heap, (ts_ms, seq, symbol, stream, payload, iterator))
+                    seq += 1
+
+            last_ts_ms: Optional[int] = None
+            while heap and not self.stop_event.is_set():
+                ts_ms, _seq, _symbol, stream, _payload, iterator = heapq.heappop(heap)
+                if last_ts_ms is not None and ts_ms > last_ts_ms:
+                    delta_s = (ts_ms - last_ts_ms) / 1000
+                    if self.stop_event.wait(delta_s):
+                        break
+                last_ts_ms = ts_ms
+                self.last_update_ts = time.time()
+                if self._ws_metrics:
+                    self._ws_metrics.record_event(stream)
+                try:
+                    next_ts_ms, next_payload = next(iterator)
+                except StopIteration:
+                    continue
+                heapq.heappush(heap, (next_ts_ms, seq, _symbol, stream, next_payload, iterator))
+                seq += 1
         finally:
             self.is_running = False
 
