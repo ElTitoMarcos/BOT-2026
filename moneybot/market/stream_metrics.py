@@ -20,6 +20,9 @@ class StreamMetrics:
         }
         self._last_event_ts: Optional[float] = None
         self._open_connections = 0
+        self._reconnects = 0
+        self._ping_latency_total_ms = 0.0
+        self._ping_latency_count = 0
 
     def record_event(self, stream: str) -> None:
         now = time.monotonic()
@@ -37,6 +40,17 @@ class StreamMetrics:
         with self._lock:
             self._open_connections = max(0, self._open_connections - 1)
 
+    def record_reconnect(self) -> None:
+        with self._lock:
+            self._reconnects += 1
+
+    def record_ping_latency_ms(self, latency_ms: float) -> None:
+        if latency_ms < 0:
+            return
+        with self._lock:
+            self._ping_latency_total_ms += latency_ms
+            self._ping_latency_count += 1
+
     def snapshot(self, *, streams: Iterable[str]) -> dict:
         now = time.monotonic()
         with self._lock:
@@ -47,10 +61,15 @@ class StreamMetrics:
             last_age_ms = None
             if self._last_event_ts is not None:
                 last_age_ms = (now - self._last_event_ts) * 1000
+            avg_latency_ms = None
+            if self._ping_latency_count > 0:
+                avg_latency_ms = self._ping_latency_total_ms / self._ping_latency_count
             return {
                 "event_rate_per_s": rates,
                 "ws_connected": self._open_connections > 0,
                 "last_ws_event_age_ms": last_age_ms,
+                "reconnects": self._reconnects,
+                "avg_ping_latency_ms": avg_latency_ms,
             }
 
     def _rate_locked(self, stream: str, now: float) -> float:
