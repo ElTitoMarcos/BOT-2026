@@ -5,7 +5,7 @@ import pandas as pd
 import pandas_ta as ta
 import requests
 
-from .rate_limiter import BinanceRestClient
+from moneybot.rate_limiter import BinanceRestClient
 
 class Strategy:
     def __init__(
@@ -215,3 +215,4 @@ class Strategy:
 
     def generate_signals(self, candles: Iterable) -> list:
         return []
+

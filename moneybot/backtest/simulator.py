@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, ROUND_DOWN
-from typing import Dict, Iterable, List, Optional
+import threading
+from typing import Callable, Dict, Iterable, List, Optional
 import uuid
 
-from moneybot.backtest.replay import MarketState
+from moneybot.backtest.replay import MarketState, ReplayEngine, ReplayEvent
+from moneybot.strategy.base_strategy import BaseStrategy
 
 
 @dataclass
@@ -59,15 +61,22 @@ class ExecutionSimulator:
         self.open_orders: List[SimOrder] = []
 
     def submit_order(self, order: SimOrder, state: MarketState) -> List[SimFill]:
-        order.order_id = order.order_id or uuid.uuid4().hex
-        order.created_at = order.created_at or state.last_timestamp_us
         fills: List[SimFill] = []
 
-        if order.order_type.lower() == "market":
+        order_type = order.order_type.lower()
+        if order_type == "cancel":
+            if order.order_id:
+                self._remove_open_order(order.order_id)
+            return fills
+
+        order.order_id = order.order_id or uuid.uuid4().hex
+        order.created_at = order.created_at or state.last_timestamp_us
+
+        if order_type == "market":
             fill = self._execute_order(order, state)
             if fill:
                 fills.append(fill)
-        elif order.order_type.lower() == "limit":
+        elif order_type == "limit":
             self.open_orders.append(order)
             fill = self._maybe_fill_limit(order, state)
             if fill:
@@ -103,6 +112,29 @@ class ExecutionSimulator:
                 "equity": equity,
             }
         )
+
+    def run_strategy(
+        self,
+        engine: ReplayEngine,
+        strategy: BaseStrategy,
+        *,
+        stop_event: Optional["threading.Event"] = None,
+        update_callback: Optional[Callable[[ReplayEvent, MarketState], None]] = None,
+    ) -> None:
+        for event in engine.iter_events():
+            if stop_event is not None and stop_event.is_set():
+                break
+            state = engine.update_state(event)
+            orders = strategy.on_event(event, state)
+            fills: List[SimFill] = []
+            for order in orders:
+                fills.extend(self.submit_order(order, state))
+            fills.extend(self.on_event(state))
+            for fill in fills:
+                strategy.on_fill(fill)
+            self.record_equity(event.timestamp_us, engine.state_by_symbol)
+            if update_callback is not None:
+                update_callback(event, state)
 
     def build_report(self) -> ExecutionReport:
         balances = {symbol: self.cash_by_symbol.get(symbol, 0.0) for symbol in self.cash_by_symbol}

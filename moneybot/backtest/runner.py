@@ -14,11 +14,12 @@ from typing import Any, Dict, Iterable, List
 import pandas as pd
 
 from moneybot.backtest.replay import ReplayEngine
-from moneybot.backtest.simulator import ExecutionSimulator, SimOrder, build_filters_from_exchange_info
+from moneybot.backtest.simulator import ExecutionSimulator, build_filters_from_exchange_info
 from moneybot.config import LOOKBACK_DAYS_DEFAULT
 from moneybot.datastore import DataStore
 from moneybot.market.recorder import BinanceHFRecorder
 from moneybot.rate_limiter import BinanceRestClient
+from moneybot.strategy.simple_strategy import SimReplayStrategy
 from moneybot.universe import build_universe
 
 
@@ -210,62 +211,6 @@ def _load_exchange_filters() -> Dict[str, dict]:
     return build_filters_from_exchange_info(exchange_info)
 
 
-class SimpleReplayStrategy:
-    def __init__(
-        self,
-        *,
-        trade_notional: float,
-        entry_bps: float = 5.0,
-        exit_bps: float = 5.0,
-    ) -> None:
-        self.trade_notional = trade_notional
-        self.entry_bps = entry_bps
-        self.exit_bps = exit_bps
-        self.last_price: Dict[str, float] = {}
-        self.positions: Dict[str, float] = {}
-
-    def on_event(self, event: Any, state: Any) -> List[SimOrder]:
-        if event.stream != "aggTrade":
-            return []
-        price = state.last_trade_price
-        if price is None:
-            return []
-        last = self.last_price.get(event.symbol)
-        self.last_price[event.symbol] = price
-        if last is None:
-            return []
-
-        orders: List[SimOrder] = []
-        position = self.positions.get(event.symbol, 0.0)
-        if position <= 0 and price > last * (1 + self.entry_bps / 10000):
-            qty = self.trade_notional / price
-            orders.append(
-                SimOrder(
-                    symbol=event.symbol,
-                    side="BUY",
-                    order_type="market",
-                    quantity=qty,
-                )
-            )
-        elif position > 0 and price < last * (1 - self.exit_bps / 10000):
-            orders.append(
-                SimOrder(
-                    symbol=event.symbol,
-                    side="SELL",
-                    order_type="market",
-                    quantity=position,
-                )
-            )
-        return orders
-
-    def on_fill(self, fill: Any) -> None:
-        position = self.positions.get(fill.symbol, 0.0)
-        if fill.side.upper() == "BUY":
-            self.positions[fill.symbol] = position + fill.quantity
-        else:
-            self.positions[fill.symbol] = max(0.0, position - fill.quantity)
-
-
 def _run_replay_backtest(
     datastore: DataStore,
     symbols: Iterable[str],
@@ -293,7 +238,7 @@ def _run_replay_backtest(
         slippage_bps=slippage_bps,
         filters_by_symbol=filters_by_symbol,
     )
-    strategy = SimpleReplayStrategy(trade_notional=cash_per_symbol * 0.1)
+    strategy = SimReplayStrategy(trade_notional=cash_per_symbol * 0.1)
 
     per_symbol = {
         symbol: {"symbol": symbol, "events": 0, "trades": 0, "skip_reason": None}
