@@ -65,6 +65,8 @@ def configure_logging(
     max_bytes: int = 5 * 1024 * 1024,
     backup_count: int = 5,
 ) -> None:
+    max_bytes = int(os.getenv("LOG_MAX_BYTES", max_bytes))
+    backup_count = int(os.getenv("LOG_BACKUP_COUNT", backup_count))
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 

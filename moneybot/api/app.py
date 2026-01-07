@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import shutil
 import time
 from collections import deque
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -152,6 +154,42 @@ def logs_tail(limit: int = Query(200, ge=1, le=1000)) -> dict:
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"No se pudo leer el log: {exc}") from exc
     return {"lines": [line.rstrip("\n") for line in lines], "available": True}
+
+
+def _require_log_token(token: Optional[str]) -> None:
+    expected = os.getenv("LOG_CLEAN_TOKEN")
+    if not expected or token != expected:
+        raise HTTPException(status_code=401, detail="Token inválido para limpiar logs.")
+
+
+@app.post("/logs/clear")
+def logs_clear(x_api_token: Optional[str] = Header(default=None, alias="X-API-Token")) -> dict:
+    _require_log_token(x_api_token)
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_PATH.open("w", encoding="utf-8") as handle:
+            handle.write("")
+        removed = 0
+        for rotated in LOG_PATH.parent.glob("moneybot.log.*"):
+            rotated.unlink()
+            removed += 1
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"No se pudieron limpiar los logs: {exc}") from exc
+    return {"ok": True, "removed_backups": removed}
+
+
+@app.post("/logs/delete")
+def logs_delete(x_api_token: Optional[str] = Header(default=None, alias="X-API-Token")) -> dict:
+    _require_log_token(x_api_token)
+    try:
+        if LOG_PATH.parent.exists():
+            shutil.rmtree(LOG_PATH.parent)
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_PATH.open("w", encoding="utf-8") as handle:
+            handle.write("")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"No se pudieron borrar los logs: {exc}") from exc
+    return {"ok": True}
 
 
 @app.post("/config/save")
