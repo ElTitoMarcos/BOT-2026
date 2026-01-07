@@ -310,6 +310,34 @@
         border-color: #f87171;
         background: rgba(248, 113, 113, 0.12);
       }
+      .progress-bar {
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        background: #1e293b;
+        overflow: hidden;
+      }
+      .progress-bar span {
+        display: block;
+        height: 100%;
+        background: #38bdf8;
+        width: 0%;
+      }
+      .data-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .checkbox-group {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .checkbox-group label {
+        font-size: 0.85rem;
+        color: #cbd5f5;
+      }
     </style>
   </head>
   <body>
@@ -324,7 +352,7 @@
       <div class="tabs">
         <button class="tab-button active" data-tab="overview">Overview</button>
         <button class="tab-button" data-tab="logs">Logs</button>
-        <button class="tab-button" data-tab="backtest">Backtest</button>
+        <button class="tab-button" data-tab="data-management">Datos históricos</button>
       </div>
 
       <section id="overview" class="panel active">
@@ -336,6 +364,8 @@
                 <select id="mode-select">
                   <option value="SIM">SIM</option>
                   <option value="LIVE">LIVE</option>
+                  <option value="TESTNET">TESTNET</option>
+                  <option value="HIST">HIST</option>
                 </select>
               </div>
               <div class="control-group">
@@ -387,66 +417,46 @@
         </div>
       </section>
 
-      <section id="backtest" class="panel">
+      <section id="data-management" class="panel">
         <div class="card">
-          <h2>Backtest</h2>
+          <h2>Datos históricos</h2>
           <div class="controls">
             <div class="control-group">
-              <label for="backtest-start-date">Start date</label>
-              <input id="backtest-start-date" type="date" />
+              <label for="data-symbol-select">Símbolo</label>
+              <select id="data-symbol-select"></select>
             </div>
-            <div class="control-group">
-              <label for="backtest-end-date">End date</label>
-              <input id="backtest-end-date" type="date" />
-            </div>
-            <div class="control-group">
-              <label for="backtest-fee-rate">Fee rate</label>
-              <input
-                id="backtest-fee-rate"
-                type="number"
-                step="0.0001"
-                placeholder="0.001"
-              />
-            </div>
-            <div class="control-group">
-              <label for="backtest-slippage-bps">Slippage bps</label>
-              <input
-                id="backtest-slippage-bps"
-                type="number"
-                step="0.1"
-                placeholder="0"
-              />
-            </div>
-            <button class="btn primary" id="backtest-run-btn">Run SIM</button>
-            <button class="btn secondary" id="backtest-download-btn" disabled>
-              Download report
-            </button>
+            <button class="btn secondary" id="data-refresh-btn">Actualizar</button>
           </div>
-          <div class="progress-steps" id="backtest-progress">
-            <div class="progress-step" data-step="download">
-              <strong>Download</strong>
-              <span class="muted">Esperando datos</span>
+          <div id="data-dates-table"></div>
+          <div class="timestamp" id="data-updated"></div>
+          <div class="error" id="data-error"></div>
+        </div>
+        <div class="card">
+          <h3>Ocupación de disco</h3>
+          <div class="progress-bar">
+            <span id="data-storage-bar"></span>
+          </div>
+          <div class="muted" id="data-storage-text"></div>
+          <div class="timestamp" id="data-storage-updated"></div>
+        </div>
+        <div class="card">
+          <h3>Grabación</h3>
+          <div class="controls">
+            <div class="control-group">
+              <label for="record-symbols">Símbolos</label>
+              <select id="record-symbols" multiple size="4"></select>
             </div>
-            <div class="progress-step" data-step="record">
-              <strong>Record</strong>
-              <span class="muted">Pendiente</span>
+            <div class="checkbox-group">
+              <label><input type="checkbox" value="aggTrade" checked /> aggTrade</label>
+              <label><input type="checkbox" value="depth" checked /> depth</label>
+              <label><input type="checkbox" value="bookTicker" checked /> bookTicker</label>
             </div>
-            <div class="progress-step" data-step="replay">
-              <strong>Replay</strong>
-              <span class="muted">Pendiente</span>
+            <div class="data-actions">
+              <button class="btn primary" id="record-start-btn">Iniciar</button>
+              <button class="btn secondary" id="record-stop-btn">Detener</button>
             </div>
           </div>
-          <div id="backtest-status" class="muted"></div>
-          <div id="backtest-summary" class="grid"></div>
-          <h3 class="section-title">Diagnostics</h3>
-          <div id="backtest-diagnostics"></div>
-          <div class="chart-wrapper">
-            <canvas id="backtest-equity" width="800" height="240"></canvas>
-            <div id="backtest-equity-empty" class="chart-empty"></div>
-          </div>
-          <div id="backtest-trades"></div>
-          <div class="timestamp" id="backtest-updated"></div>
-          <div class="error" id="backtest-error"></div>
+          <div class="error" id="record-error"></div>
         </div>
       </section>
     </main>

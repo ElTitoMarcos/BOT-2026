@@ -32,10 +32,12 @@ STREAM_FILES = {
 @dataclass
 class DataBudgetManager:
     data_dir: Path
-    max_gb: float = DATA_MAX_GB
+    max_gb: float | None = None
     check_interval_s: float = 60.0
 
     def __post_init__(self) -> None:
+        if self.max_gb is None:
+            self.max_gb = DATA_MAX_GB
         self._last_check = 0.0
         self._lock = threading.Lock()
 

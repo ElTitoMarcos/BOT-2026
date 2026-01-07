@@ -11,13 +11,12 @@ const statusError = document.getElementById("status-error");
 const metricsError = document.getElementById("metrics-error");
 const tradesError = document.getElementById("trades-error");
 const logsError = document.getElementById("logs-error");
-const backtestError = document.getElementById("backtest-error");
+const dataError = document.getElementById("data-error");
 const statusUpdated = document.getElementById("status-updated");
 const healthUpdated = document.getElementById("health-updated");
 const metricsUpdated = document.getElementById("metrics-updated");
 const tradesUpdated = document.getElementById("trades-updated");
 const logsUpdated = document.getElementById("logs-updated");
-const backtestUpdated = document.getElementById("backtest-updated");
 const envValue = document.getElementById("env-value");
 const statusBadge = document.getElementById("status-badge");
 
@@ -25,24 +24,20 @@ const startButton = document.getElementById("start-btn");
 const stopButton = document.getElementById("stop-btn");
 const modeSelect = document.getElementById("mode-select");
 const toast = document.getElementById("toast");
-const backtestRunButton = document.getElementById("backtest-run-btn");
-const backtestDownloadButton = document.getElementById("backtest-download-btn");
-const backtestStartDate = document.getElementById("backtest-start-date");
-const backtestEndDate = document.getElementById("backtest-end-date");
-const backtestFeeRate = document.getElementById("backtest-fee-rate");
-const backtestSlippageBps = document.getElementById("backtest-slippage-bps");
-const backtestStatus = document.getElementById("backtest-status");
-const backtestSummary = document.getElementById("backtest-summary");
-const backtestDiagnostics = document.getElementById("backtest-diagnostics");
-const backtestTrades = document.getElementById("backtest-trades");
-const backtestEquity = document.getElementById("backtest-equity");
-const backtestEquityEmpty = document.getElementById("backtest-equity-empty");
-const backtestProgress = document.getElementById("backtest-progress");
+const dataSymbolSelect = document.getElementById("data-symbol-select");
+const dataRefreshButton = document.getElementById("data-refresh-btn");
+const dataDatesTable = document.getElementById("data-dates-table");
+const dataUpdated = document.getElementById("data-updated");
+const dataStorageBar = document.getElementById("data-storage-bar");
+const dataStorageText = document.getElementById("data-storage-text");
+const dataStorageUpdated = document.getElementById("data-storage-updated");
+const recordSymbolsSelect = document.getElementById("record-symbols");
+const recordStartButton = document.getElementById("record-start-btn");
+const recordStopButton = document.getElementById("record-stop-btn");
+const recordError = document.getElementById("record-error");
 
 let toastTimer;
 let currentStatus = null;
-let backtestPoller = null;
-let activeBacktestJobId = null;
 
 tabButtons.forEach((button) => {
   button.addEventListener("click", () => {
@@ -196,6 +191,63 @@ const renderTrades = (trades) => {
   renderTradesTable(tradesContainer, trades);
 };
 
+const renderDataDates = (dates, symbol) => {
+  dataDatesTable.innerHTML = "";
+  if (!dates.length) {
+    dataDatesTable.innerHTML = '<p class="muted">No hay fechas disponibles.</p>';
+    return;
+  }
+  const table = document.createElement("table");
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Fecha</th>
+        <th>Acciones</th>
+      </tr>
+    </thead>
+  `;
+  const tbody = document.createElement("tbody");
+  dates.forEach((day) => {
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td>${day}</td>
+      <td class="data-actions">
+        <button class="btn secondary" data-action="download" data-date="${day}">Descargar</button>
+        <button class="btn warn" data-action="delete" data-date="${day}">Borrar</button>
+      </td>
+    `;
+    tbody.appendChild(row);
+  });
+  table.appendChild(tbody);
+  dataDatesTable.appendChild(table);
+  dataDatesTable.querySelectorAll("button[data-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const action = button.dataset.action;
+      const date = button.dataset.date;
+      if (action === "download") {
+        window.location.href = `/data/download?symbol=${encodeURIComponent(
+          symbol,
+        )}&start=${date}&end=${date}`;
+        return;
+      }
+      if (!confirm(`¿Borrar datos de ${symbol} para ${date}?`)) {
+        return;
+      }
+      try {
+        await fetchJson(
+          `/data/day?symbol=${encodeURIComponent(symbol)}&date=${encodeURIComponent(date)}`,
+          { method: "DELETE" },
+        );
+        showToast(`Datos de ${symbol} ${date} borrados`);
+        refreshDataDates();
+        refreshStorage();
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    });
+  });
+};
+
 const fetchJson = async (url, options = {}) => {
   const response = await fetch(url, options);
   if (!response.ok) {
@@ -271,80 +323,6 @@ const refreshLogs = async () => {
   }
 };
 
-
-const renderBacktestSummary = (summary) => {
-  if (!summary || Object.keys(summary).length === 0) {
-    backtestSummary.innerHTML = '<p class="muted">Sin resumen disponible.</p>';
-    return;
-  }
-  const { diagnostics, ...summaryFields } = summary;
-  renderKeyValue(backtestSummary, summaryFields);
-};
-
-const renderBacktestDiagnostics = (diagnostics) => {
-  if (!backtestDiagnostics) return;
-  backtestDiagnostics.innerHTML = "";
-  if (!diagnostics || Object.keys(diagnostics).length === 0) {
-    backtestDiagnostics.innerHTML = '<p class="muted">Sin diagnostics disponibles.</p>';
-    return;
-  }
-  const { per_symbol: perSymbol = [], ...summaryFields } = diagnostics;
-  const summaryGrid = document.createElement("div");
-  summaryGrid.className = "grid";
-  renderKeyValue(summaryGrid, summaryFields);
-  backtestDiagnostics.appendChild(summaryGrid);
-  const perSymbolTitle = document.createElement("div");
-  perSymbolTitle.className = "section-title";
-  perSymbolTitle.textContent = "Per symbol";
-  backtestDiagnostics.appendChild(perSymbolTitle);
-  const perSymbolContainer = document.createElement("div");
-  renderDataTable(perSymbolContainer, perSymbol, "Sin diagnostics por símbolo.");
-  backtestDiagnostics.appendChild(perSymbolContainer);
-};
-
-const drawEquityCurve = (series) => {
-  if (!backtestEquity) return;
-  const ctx = backtestEquity.getContext("2d");
-  const width = backtestEquity.clientWidth || backtestEquity.width;
-  const height = backtestEquity.clientHeight || backtestEquity.height;
-  backtestEquity.width = width;
-  backtestEquity.height = height;
-  ctx.clearRect(0, 0, width, height);
-  if (!series || series.length === 0) {
-    backtestEquityEmpty.textContent = "Sin datos de equity.";
-    return;
-  }
-  backtestEquityEmpty.textContent = "";
-  const values = series.map((point) => Number(point.equity || 0));
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const padding = 24;
-  ctx.strokeStyle = "#1e293b";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(padding, padding);
-  ctx.lineTo(padding, height - padding);
-  ctx.lineTo(width - padding, height - padding);
-  ctx.stroke();
-  ctx.strokeStyle = "#38bdf8";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  series.forEach((point, index) => {
-    const x =
-      padding +
-      (index / Math.max(series.length - 1, 1)) * (width - padding * 2);
-    const y =
-      height - padding - ((Number(point.equity || 0) - min) / range) * (height - padding * 2);
-    if (index === 0) {
-      ctx.moveTo(x, y);
-    } else {
-      ctx.lineTo(x, y);
-    }
-  });
-  ctx.stroke();
-};
-
 const buildHealthSnapshot = (status) => {
   const health = status?.live_feed_health || status?.live_feed || status?.health || {};
   return {
@@ -368,95 +346,60 @@ const updateStatusBadge = (status) => {
   statusBadge.classList.toggle("stopped", !running);
 };
 
-const updateBacktestProgress = (status) => {
-  if (!backtestProgress) return;
-  const steps = backtestProgress.querySelectorAll(".progress-step");
-  steps.forEach((step) => {
-    step.classList.remove("active", "done", "failed");
-  });
-  if (!status) return;
-  if (status.state === "failed") {
-    steps.forEach((step) => step.classList.add("failed"));
-    return;
-  }
-  const progress = Number(status.progress ?? 0);
-  let activeStep = "download";
-  if (progress >= 55) {
-    activeStep = "replay";
-  } else if (progress >= 35) {
-    activeStep = "record";
-  }
-  steps.forEach((step) => {
-    const name = step.dataset.step;
-    if (status.state === "completed" || name === activeStep) {
-      step.classList.add(status.state === "completed" ? "done" : "active");
-    }
-    if (
-      (activeStep === "record" && name === "download") ||
-      (activeStep === "replay" && (name === "download" || name === "record"))
-    ) {
-      step.classList.add("done");
-    }
-  });
-};
-
-const updateBacktestStatus = (status) => {
-  if (!status) {
-    backtestStatus.textContent = "";
-    return;
-  }
-  const state = status.state || "unknown";
-  const normalizedState =
-    state === "completed" ? "FINISHED" : state === "failed" ? "FAILED" : state.toUpperCase();
-  backtestStatus.textContent = `${normalizedState} · ${status.progress ?? 0}% · ${
-    status.message || ""
-  }`;
-  updateBacktestProgress(status);
-  backtestUpdated.textContent = `Actualizado: ${new Date().toLocaleTimeString()}`;
-};
-
-const stopBacktestPolling = () => {
-  if (backtestPoller) {
-    clearInterval(backtestPoller);
-    backtestPoller = null;
-  }
-};
-
-const fetchBacktestResult = async (jobId) => {
-  const result = await fetchJson(`/backtest/result/${jobId}`);
-  renderBacktestSummary(result.summary || {});
-  renderBacktestDiagnostics(result.summary?.diagnostics || {});
-  renderTradesTable(backtestTrades, result.trades || []);
-  drawEquityCurve(result.equity_series || []);
-};
-
-const pollBacktestStatus = async (jobId) => {
-  backtestError.textContent = "";
+const refreshStorage = async () => {
   try {
-    const status = await fetchJson(`/backtest/status/${jobId}`);
-    updateBacktestStatus(status);
-    if (status.state === "completed") {
-      stopBacktestPolling();
-      await fetchBacktestResult(jobId);
-      backtestDownloadButton.disabled = false;
-      showToast("Backtest finalizado");
-    } else if (status.state === "failed") {
-      stopBacktestPolling();
-      backtestError.textContent = status.message || "Backtest fallido.";
-      backtestDownloadButton.disabled = true;
+    const data = await fetchJson("/data/storage");
+    const maxBytes = data.max_gb * 1024 * 1024 * 1024;
+    const ratio = maxBytes > 0 ? Math.min(data.size_bytes / maxBytes, 1) : 0;
+    dataStorageBar.style.width = `${(ratio * 100).toFixed(1)}%`;
+    dataStorageText.textContent = `${(data.size_bytes / (1024 * 1024)).toFixed(
+      2,
+    )} MB usados de ${data.max_gb} GB`;
+    dataStorageUpdated.textContent = `Actualizado: ${new Date().toLocaleTimeString()}`;
+  } catch (error) {
+    dataStorageText.textContent = "No disponible";
+  }
+};
+
+const refreshSymbols = async () => {
+  try {
+    const data = await fetchJson("/data/symbols");
+    const symbols = data.symbols || [];
+    dataSymbolSelect.innerHTML = "";
+    recordSymbolsSelect.innerHTML = "";
+    if (!symbols.length) {
+      dataSymbolSelect.innerHTML = '<option value="">Sin símbolos</option>';
+    } else {
+      symbols.forEach((symbol) => {
+        const option = document.createElement("option");
+        option.value = symbol;
+        option.textContent = symbol;
+        dataSymbolSelect.appendChild(option);
+        const recordOption = option.cloneNode(true);
+        recordSymbolsSelect.appendChild(recordOption);
+      });
     }
   } catch (error) {
-    backtestError.textContent = error.message;
-    stopBacktestPolling();
+    dataError.textContent = error.message;
   }
 };
 
-const startBacktestPolling = (jobId) => {
-  stopBacktestPolling();
-  backtestPoller = setInterval(() => {
-    pollBacktestStatus(jobId);
-  }, 1000);
-  pollBacktestStatus(jobId);
+const refreshDataDates = async () => {
+  dataError.textContent = "";
+  const symbol = dataSymbolSelect.value;
+  if (!symbol) {
+    dataDatesTable.innerHTML = '<p class="muted">Selecciona un símbolo.</p>';
+    return;
+  }
+  try {
+    const data = await fetchJson(
+      `/data/available-dates?symbol=${encodeURIComponent(symbol)}`,
+    );
+    renderDataDates(data.dates || [], symbol);
+    dataUpdated.textContent = `Actualizado: ${new Date().toLocaleTimeString()}`;
+  } catch (error) {
+    dataError.textContent = error.message;
+  }
 };
 
 const refreshEnv = async () => {
@@ -473,6 +416,7 @@ const refreshAll = () => {
   refreshMetrics();
   refreshTrades();
   refreshLogs();
+  refreshStorage();
 };
 
 const runControlAction = async (url, payload, successMessage) => {
@@ -503,49 +447,49 @@ modeSelect.addEventListener("change", (event) => {
   const mode = event.target.value;
   runControlAction("/control/set-mode", { mode }, `Modo actualizado a ${mode}`);
 });
+dataSymbolSelect.addEventListener("change", () => {
+  refreshDataDates();
+});
 
+dataRefreshButton.addEventListener("click", () => {
+  refreshDataDates();
+  refreshStorage();
+});
 
-backtestRunButton.addEventListener("click", async () => {
-  backtestError.textContent = "";
-  const payload = {
-    start_date: backtestStartDate.value || null,
-    end_date: backtestEndDate.value || null,
-    fee_rate: backtestFeeRate.value ? Number(backtestFeeRate.value) : 0.001,
-    slippage_bps: backtestSlippageBps.value ? Number(backtestSlippageBps.value) : 0,
-  };
+recordStartButton.addEventListener("click", async () => {
+  recordError.textContent = "";
+  const selectedSymbols = Array.from(recordSymbolsSelect.selectedOptions).map(
+    (option) => option.value,
+  );
+  const selectedStreams = Array.from(
+    document.querySelectorAll('.checkbox-group input[type="checkbox"]:checked'),
+  ).map((checkbox) => checkbox.value);
   try {
-    backtestRunButton.disabled = true;
-    backtestDownloadButton.disabled = true;
-    backtestSummary.innerHTML = "";
-    backtestDiagnostics.innerHTML = "";
-    backtestTrades.innerHTML = "";
-    backtestEquityEmpty.textContent = "Ejecutando backtest...";
-    const response = await fetchJson("/backtest/run", {
+    await fetchJson("/data/record/start", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ symbols: selectedSymbols, streams: selectedStreams }),
     });
-    activeBacktestJobId = response.job_id;
-    showToast("Backtest en ejecución");
-    startBacktestPolling(activeBacktestJobId);
+    showToast("Grabación iniciada");
   } catch (error) {
-    backtestError.textContent = error.message;
-  } finally {
-    backtestRunButton.disabled = false;
+    recordError.textContent = error.message;
   }
 });
 
-backtestDownloadButton.addEventListener("click", () => {
-  if (!activeBacktestJobId) {
-    showToast("No hay job de backtest disponible", true);
-    return;
+recordStopButton.addEventListener("click", async () => {
+  recordError.textContent = "";
+  try {
+    await fetchJson("/data/record/stop", { method: "POST" });
+    showToast("Grabación detenida");
+  } catch (error) {
+    recordError.textContent = error.message;
   }
-  window.location.href = `/backtest/download/${activeBacktestJobId}`;
 });
 
 refreshEnv();
+refreshSymbols().then(refreshDataDates);
 refreshAll();
 setInterval(refreshAll, 5000);
 
