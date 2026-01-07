@@ -44,6 +44,16 @@ class BinanceHFRecorder:
 
     def start(self, symbols: Iterable[str]) -> None:
         streams = self._build_streams(symbols)
+        self._start_streams(streams)
+
+    def start_with_streams(self, symbols: Iterable[str], streams: Iterable[str]) -> None:
+        streams_list = list(streams)
+        if not streams_list:
+            streams_list = ["aggTrade", "depth", "bookTicker"]
+        streams = self._build_streams(symbols, streams_list)
+        self._start_streams(streams)
+
+    def _start_streams(self, streams: List[str]) -> None:
         chunks = [
             streams[i : i + self.max_streams_per_connection]
             for i in range(0, len(streams), self.max_streams_per_connection)
@@ -71,17 +81,18 @@ class BinanceHFRecorder:
             if connection.thread.is_alive():
                 connection.thread.join(timeout=5)
 
-    def _build_streams(self, symbols: Iterable[str]) -> List[str]:
+    def _build_streams(self, symbols: Iterable[str], streams: Optional[Iterable[str]] = None) -> List[str]:
         streams: List[str] = []
+        stream_list = list(streams) if streams is not None else ["aggTrade", "depth", "bookTicker"]
         for symbol in symbols:
             lower = symbol.lower()
-            streams.extend(
-                [
-                    f"{lower}@aggTrade",
-                    f"{lower}@depth@{self.depth_speed}",
-                    f"{lower}@bookTicker",
-                ]
-            )
+            for stream in stream_list:
+                if "@" in stream:
+                    streams.append(stream)
+                elif stream == "depth":
+                    streams.append(f"{lower}@depth@{self.depth_speed}")
+                else:
+                    streams.append(f"{lower}@{stream}")
         return streams
 
     def _run_connection(self, streams: List[str], stop_event: threading.Event) -> None:

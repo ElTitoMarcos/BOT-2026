@@ -8,7 +8,7 @@ from dotenv import load_dotenv, set_key
 
 ENV_PATH = Path(".env")
 VALID_ENVIRONMENTS = {"LIVE", "TESTNET"}
-DATA_MAX_GB = float(os.getenv("DATA_MAX_GB", "100"))
+DATA_MAX_GB = float(os.getenv("DATA_MAX_GB", "500"))
 HF_INTERVAL = os.getenv("HF_INTERVAL", "1s")
 DEPTH_SPEED = os.getenv("DEPTH_SPEED", "100ms")
 UNIVERSE_TOP_N = int(os.getenv("UNIVERSE_TOP_N", "30"))

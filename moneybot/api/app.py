@@ -16,6 +16,7 @@ from moneybot.backtest.runner import BacktestJobManager
 from moneybot.config import VALID_ENVIRONMENTS, get_config, load_env, save_config
 from moneybot.observability import ObservabilityStore
 from moneybot.runtime import BotRuntime
+from moneybot.api.data_management import router as data_management_router
 
 app = FastAPI(title="MoneyBot")
 observability = ObservabilityStore()
@@ -27,6 +28,7 @@ CLIENT_CHECK_INTERVAL_S = 5
 CLIENT_TIMEOUT_S = 15
 
 load_env()
+app.include_router(data_management_router, prefix="/data", tags=["data"])
 
 
 async def _monitor_ui_clients() -> None:
