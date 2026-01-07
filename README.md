@@ -44,6 +44,18 @@ MoneyBot soporta los siguientes modos configurables con `BOT_MODE`:
 - `TESTNET`: streaming en tiempo real sobre Binance testnet.
 - `HIST`: replay histórico usando eventos grabados en `./data`.
 
+## Streams de mercado y estrategia de acumulación
+
+La estrategia de acumulación consume tres tipos de streams de mercado:
+
+- `aggTrade`: trades agregados que alimentan el cálculo de volumen comprador/vendedor.
+- `depth`: actualizaciones del order book que ayudan a detectar resistencia o presión en niveles cercanos.
+- `bookTicker`: mejor bid/ask para actualizar el precio actual y validar objetivos.
+
+En conjunto, el motor usa `aggTrade` para medir el ratio de compras sobre ventas,
+`depth`/`bookTicker` para contextualizar la liquidez disponible y definir entradas o
+cancelaciones, y el mejor bid/ask para calcular los precios de salida.
+
 Variables de entorno útiles:
 
 - `LIVE_WS_URL`: URL de WebSocket para mainnet (por defecto `wss://stream.binance.com:9443/ws`).
