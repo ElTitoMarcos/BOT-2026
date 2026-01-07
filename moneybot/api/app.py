@@ -18,8 +18,8 @@ from moneybot.observability import ObservabilityStore
 from moneybot.runtime import BotRuntime
 
 app = FastAPI(title="MoneyBot")
-runtime = BotRuntime()
 observability = ObservabilityStore()
+runtime = BotRuntime(observability=observability)
 backtest_jobs = BacktestJobManager()
 LOG_PATH = Path("logs/moneybot.log")
 UI_DIR = Path(__file__).resolve().parent.parent / "ui_static"

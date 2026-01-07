@@ -1,21 +1,24 @@
 from __future__ import annotations
 
-import heapq
 import os
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from moneybot.backtest.replay import ReplayEngine
-from moneybot.backtest.simulator import ExecutionSimulator, SimOrder
+from moneybot.backtest.simulator import ExecutionSimulator
 from moneybot.config import LOOKBACK_DAYS_DEFAULT
-from moneybot.datastore import DataStore, normalize_timestamp
+from moneybot.datastore import DataStore
 from moneybot.market.recorder import BinanceHFRecorder
 from moneybot.market.stream_metrics import StreamMetrics
 from moneybot.market_streams import BinanceStreamCache
 from moneybot.market.testnet_stream_cache import TestnetStreamCache
+from moneybot.observability import ObservabilityStore
+from moneybot.strategy.accumulation_strategy import AccumulationStrategy
+from moneybot.strategy.base_strategy import BaseStrategy
+from moneybot.strategy.simple_strategy import SimReplayStrategy
 
 
 @dataclass
@@ -27,56 +30,12 @@ class SimConfig:
     slippage_bps: float
 
 
-class SimReplayStrategy:
-    def __init__(self, *, trade_notional: float, entry_bps: float = 5.0, exit_bps: float = 5.0) -> None:
-        self.trade_notional = trade_notional
-        self.entry_bps = entry_bps
-        self.exit_bps = exit_bps
-        self.last_price: dict[str, float] = {}
-        self.positions: dict[str, float] = {}
-
-    def on_event(self, event: Any, state: Any) -> list[SimOrder]:
-        if event.stream != "aggTrade":
-            return []
-        price = state.last_trade_price
-        if price is None:
-            return []
-        last = self.last_price.get(event.symbol)
-        self.last_price[event.symbol] = price
-        if last is None:
-            return []
-        position = self.positions.get(event.symbol, 0.0)
-        if position <= 0 and price > last * (1 + self.entry_bps / 10000):
-            qty = self.trade_notional / price
-            return [
-                SimOrder(
-                    symbol=event.symbol,
-                    side="BUY",
-                    order_type="market",
-                    quantity=qty,
-                )
-            ]
-        if position > 0 and price < last * (1 - self.exit_bps / 10000):
-            return [
-                SimOrder(
-                    symbol=event.symbol,
-                    side="SELL",
-                    order_type="market",
-                    quantity=position,
-                )
-            ]
-        return []
-
-    def on_fill(self, fill: Any) -> None:
-        position = self.positions.get(fill.symbol, 0.0)
-        if fill.side.upper() == "BUY":
-            self.positions[fill.symbol] = position + fill.quantity
-        else:
-            self.positions[fill.symbol] = max(0.0, position - fill.quantity)
-
-
 class BotRuntime:
-    def __init__(self, mode: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        mode: Optional[str] = None,
+        observability: Optional[ObservabilityStore] = None,
+    ) -> None:
         self.is_running = False
         self.mode = (mode or os.getenv("BOT_MODE", "SIM")).upper()
         self.last_update_ts: Optional[float] = None
@@ -84,6 +43,7 @@ class BotRuntime:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._uptime_start = time.monotonic()
+        self._observability = observability or ObservabilityStore()
         self._ws_metrics = StreamMetrics(
             streams=("aggTrade", "depth", "bookTicker"),
             window_seconds=5.0,
@@ -174,20 +134,20 @@ class BotRuntime:
                 fee_rate=config.fee_rate,
                 slippage_bps=config.slippage_bps,
             )
-            strategy = SimReplayStrategy(trade_notional=cash_per_symbol * 0.1)
+            strategy = self._build_strategy(
+                trade_notional=cash_per_symbol * 0.1,
+                fee_rate=config.fee_rate,
+            )
 
-            for event in engine.iter_events():
-                if self.stop_event.is_set():
-                    return
-                state = engine.update_state(event)
-                fills = []
-                for order in strategy.on_event(event, state):
-                    fills.extend(simulator.submit_order(order, state))
-                fills.extend(simulator.on_event(state))
-                for fill in fills:
-                    strategy.on_fill(fill)
-                simulator.record_equity(event.timestamp_us, engine.state_by_symbol)
+            def handle_update(_event: object, _state: object) -> None:
                 self.last_update_ts = time.time()
+
+            simulator.run_strategy(
+                engine,
+                strategy,
+                stop_event=self.stop_event,
+                update_callback=handle_update,
+            )
             simulator.liquidate(engine.state_by_symbol)
             self.last_update_ts = time.time()
         finally:
@@ -258,46 +218,43 @@ class BotRuntime:
                 return
             earliest_start = min(start for start, _ in ranges)
             latest_end = max(end for _, end in ranges)
-            start_ts_ms = int(earliest_start.timestamp() * 1000)
-            end_ts_ms = int(latest_end.timestamp() * 1000)
-            streams = ("aggTrade", "depth", "bookTicker")
+            engine = ReplayEngine(
+                datastore,
+                symbols,
+                start_dt=earliest_start,
+                end_dt=latest_end,
+            )
+            initial_balance = float(
+                os.getenv("HIST_INITIAL_BALANCE", os.getenv("SIM_INITIAL_BALANCE", "1000"))
+            )
+            fee_rate = float(os.getenv("HIST_FEE_RATE", os.getenv("SIM_FEE_RATE", "0.001")))
+            slippage_bps = float(os.getenv("HIST_SLIPPAGE_BPS", os.getenv("SIM_SLIPPAGE_BPS", "5")))
+            cash_per_symbol = initial_balance / max(len(symbols), 1)
+            simulator = ExecutionSimulator(
+                initial_cash_by_symbol={symbol: cash_per_symbol for symbol in symbols},
+                fee_rate=fee_rate,
+                slippage_bps=slippage_bps,
+            )
+            strategy = self._build_strategy(
+                trade_notional=cash_per_symbol * 0.1,
+                fee_rate=fee_rate,
+            )
 
-            def stream_iter(symbol: str, stream: str):
-                for payload in datastore.iter_events(symbol, stream, start_ts_ms, end_ts_ms):
-                    ts_ms = normalize_timestamp(payload.get("T") or payload.get("E"))
-                    if ts_ms <= 0 or ts_ms < start_ts_ms or ts_ms > end_ts_ms:
-                        continue
-                    yield ts_ms, payload
-
-            heap: list[tuple[int, int, str, str, dict, Any]] = []
-            seq = 0
-            for symbol in symbols:
-                for stream in streams:
-                    iterator = iter(stream_iter(symbol, stream))
-                    try:
-                        ts_ms, payload = next(iterator)
-                    except StopIteration:
-                        continue
-                    heapq.heappush(heap, (ts_ms, seq, symbol, stream, payload, iterator))
-                    seq += 1
-
-            last_ts_ms: Optional[int] = None
-            while heap and not self.stop_event.is_set():
-                ts_ms, _seq, _symbol, stream, _payload, iterator = heapq.heappop(heap)
-                if last_ts_ms is not None and ts_ms > last_ts_ms:
-                    delta_s = (ts_ms - last_ts_ms) / 1000
-                    if self.stop_event.wait(delta_s):
-                        break
-                last_ts_ms = ts_ms
+            def handle_update(event: object, _state: object) -> None:
                 self.last_update_ts = time.time()
                 if self._ws_metrics:
-                    self._ws_metrics.record_event(stream)
-                try:
-                    next_ts_ms, next_payload = next(iterator)
-                except StopIteration:
-                    continue
-                heapq.heappush(heap, (next_ts_ms, seq, _symbol, stream, next_payload, iterator))
-                seq += 1
+                    stream = getattr(event, "stream", None)
+                    if stream:
+                        self._ws_metrics.record_event(stream)
+
+            simulator.run_strategy(
+                engine,
+                strategy,
+                stop_event=self.stop_event,
+                update_callback=handle_update,
+            )
+            simulator.liquidate(engine.state_by_symbol)
+            self.last_update_ts = time.time()
         finally:
             self.is_running = False
 
@@ -314,6 +271,33 @@ class BotRuntime:
             fee_rate=fee_rate,
             slippage_bps=slippage_bps,
         )
+
+    def _build_strategy(self, *, trade_notional: float, fee_rate: float) -> BaseStrategy:
+        if self._use_accumulation_strategy():
+            tick_size = float(os.getenv("ACCUMULATION_TICK_SIZE", "0.01"))
+            min_volume_btc = float(os.getenv("ACCUMULATION_MIN_VOLUME_BTC", "5"))
+            buy_side_threshold = float(os.getenv("ACCUMULATION_BUY_THRESHOLD", "0.60"))
+            profit_tick = float(os.getenv("ACCUMULATION_PROFIT_TICK", str(tick_size)))
+            override_notional = os.getenv("ACCUMULATION_TRADE_NOTIONAL")
+            if override_notional is not None:
+                trade_notional = float(override_notional)
+            fee_override = os.getenv("ACCUMULATION_FEE_RATE")
+            if fee_override is not None:
+                fee_rate = float(fee_override)
+            return AccumulationStrategy(
+                trade_notional=trade_notional,
+                tick_size=tick_size,
+                min_volume_btc=min_volume_btc,
+                buy_side_threshold=buy_side_threshold,
+                profit_tick=profit_tick,
+                fee_rate=fee_rate,
+                observability=self._observability,
+            )
+        return SimReplayStrategy(trade_notional=trade_notional)
+
+    def _use_accumulation_strategy(self) -> bool:
+        flag = os.getenv("USE_ACCUMULATION_STRATEGY", "false").lower() in {"1", "true", "yes"}
+        return flag or self.mode in {"LIVE", "TESTNET"}
 
     @staticmethod
     def _parse_symbols(value: Optional[str], default: list[str]) -> list[str]:
